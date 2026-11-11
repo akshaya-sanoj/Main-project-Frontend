@@ -4,6 +4,7 @@ import {
   Trophy, Plus, Users, Calendar, DollarSign, Award, Trash2, ShieldAlert,
   UserCheck, ClipboardList, Send, Pencil, LogOut, CheckCircle2,
 } from 'lucide-react';
+import { API_BASE } from '../../services/api';
 
 /*
  * AdminDashboard (fest committee)
@@ -20,7 +21,6 @@ const FONT_CSS = `
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
 
-const API_BASE = 'http://localhost:3000';
 
 const LANGUAGES = ['Malayalam', 'English', 'Hindi', 'Arabic', 'Urdu', 'Sanskrit', 'Tamil'];
 

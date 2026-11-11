@@ -18,6 +18,7 @@ import {
   adminSubmissionsKey,
   normalizeDept,
 } from '../../utils/deptKeys';
+import { API_BASE } from '../../services/api';
 
 const FONT_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap');
@@ -31,7 +32,6 @@ const FONT_CSS = `
 }
 `;
 
-const API_BASE = 'http://localhost:3000';
 
 async function request(path, options = {}) {
   let res;

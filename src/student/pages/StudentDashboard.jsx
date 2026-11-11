@@ -5,14 +5,13 @@ import {
   IndianRupee, PhoneCall, Radio, Clock
 } from 'lucide-react';
 import { normalizeDept } from '../../utils/deptKeys';
-
+import { API_BASE } from '../../services/api';
 const FONT_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap');
 .fest-display { font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif; }
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
 
-const API_BASE = 'http://localhost:3000';
 
 const sameId = (a, b) => String(a) === String(b);
 

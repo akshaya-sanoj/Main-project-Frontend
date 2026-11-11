@@ -19,8 +19,7 @@ import {
   PhoneCall,
 } from 'lucide-react';
 import { rosterKey, normalizeDept } from '../../utils/deptKeys';
-
-const API_BASE = 'http://localhost:3000';
+import { API_BASE } from '../../services/api';
 
 const sameId = (a, b) => String(a) === String(b);
 
