@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Trophy, Calendar, ShieldAlert, LogOut, CheckCircle2,
   IndianRupee, PhoneCall, Radio, Clock
 } from 'lucide-react';
+import { normalizeDept } from '../../utils/deptKeys';
 
 const FONT_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap');
@@ -11,25 +12,61 @@ const FONT_CSS = `
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
 
+const API_BASE = 'http://localhost:3000';
+
+const sameId = (a, b) => String(a) === String(b);
+
 export default function StudentDashboard() {
   const [student, setStudent] = useState(null);
-  const [fundPaid, setFundPaid] = useState(false);
   const [myPrograms, setMyPrograms] = useState([]);
 
-  // Load logged-in student
+  // Fest fund
+  const [deptFund, setDeptFund] = useState(null);
+  const [myPayment, setMyPayment] = useState(null);
+  const [payBusy, setPayBusy] = useState(false);
+  const [payMessage, setPayMessage] = useState({ type: '', text: '' });
+
+  // Load the logged-in student, then refresh the profile from the server
   useEffect(() => {
-    const savedUser = localStorage.getItem('fest_user');
-    if (savedUser) {
-      try {
-        const parsed = JSON.parse(savedUser);
-        setStudent(parsed);
-        const paidStatus = localStorage.getItem(`student_fund_paid_${parsed.id || parsed.email}`);
-        if (paidStatus === 'true') setFundPaid(true);
-      } catch (e) {
-        console.error('Failed to parse user session', e);
-      }
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem('fest_user') || 'null');
+    } catch (e) {
+      console.error('Failed to parse user session', e);
+    }
+    if (!saved) return;
+    setStudent(saved);
+
+    if (saved.id) {
+      fetch(`${API_BASE}/users/${saved.id}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((fresh) => fresh && setStudent(fresh))
+        .catch(() => {});
     }
   }, []);
+
+  const deptKey = normalizeDept(student?.department || '');
+
+  // Load this student's fund amount and payment from the server
+  const loadFund = useCallback(async () => {
+    if (!student?.id) return;
+    const get = (path) => fetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : []));
+    try {
+      const [funds, pays] = await Promise.all([get('/deptFunds'), get('/payments')]);
+      setDeptFund((Array.isArray(funds) ? funds : []).find((f) => f.deptKey === deptKey) || null);
+      setMyPayment(
+        (Array.isArray(pays) ? pays : []).find(
+          (p) => sameId(p.studentId, student.id) && p.status === 'paid'
+        ) || null
+      );
+    } catch (e) {
+      console.error('Failed to load fund data', e);
+    }
+  }, [student?.id, deptKey]);
+
+  useEffect(() => {
+    loadFund();
+  }, [loadFund]);
 
   // Load programs this student was registered for by incharge teachers
   useEffect(() => {
@@ -91,12 +128,69 @@ export default function StudentDashboard() {
     };
   }, [student]);
 
-  const handlePayFund = () => {
-    setFundPaid(true);
-    if (student) {
-      localStorage.setItem(`student_fund_paid_${student.id || student.email}`, 'true');
+  /*
+   * startPayment: the ONLY function that has to change when Stripe is added.
+   *
+   * TEST MODE (now): saves a "paid" record straight away. Nothing real is charged.
+   *
+   * STRIPE (later, once the backend exists):
+   *   1. POST to your backend, e.g. /api/payments/checkout, with only the student's id.
+   *      The backend looks up the department's fund amount itself; never send the amount from here.
+   *   2. The backend creates a Stripe Checkout Session using the secret key and returns its url.
+   *   3. window.location.href = session.url  (the student pays on Stripe's page)
+   *   4. Stripe calls your backend webhook. ONLY the webhook saves the payment as "paid"
+   *      (provider: 'stripe', providerRef: the Stripe payment id).
+   *   5. On return to this page, loadFund() runs and shows Paid.
+   * The rest of this page, the class teacher's list and the coordinator totals stay unchanged.
+   */
+  const startPayment = async () => {
+    setPayMessage({ type: '', text: '' });
+
+    if (!deptFund?.amount) {
+      setPayMessage({ type: 'error', text: 'Your department has not set the fest fund amount yet.' });
+      return;
     }
-    alert('Successfully paid the fest fund to your class teacher! Receipt recorded.');
+    if (!student?.classSection) {
+      setPayMessage({ type: 'error', text: 'Your class is not set on your account. Please ask your department coordinator.' });
+      return;
+    }
+
+    setPayBusy(true);
+    try {
+      // Check again so a double click can never create two payments
+      const existing = await fetch(`${API_BASE}/payments?studentId=${student.id}`).then((r) => (r.ok ? r.json() : []));
+      if (Array.isArray(existing) && existing.some((p) => p.status === 'paid')) {
+        await loadFund();
+        return;
+      }
+
+      const res = await fetch(`${API_BASE}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: student.id,
+          studentName: student.name,
+          registerNo: student.registerNo || '',
+          department: student.department,
+          deptKey,
+          classSection: student.classSection,
+          amount: Number(deptFund.amount),
+          currency: 'INR',
+          status: 'paid',
+          provider: 'test',
+          providerRef: null,
+          paidAt: new Date().toISOString(),
+        }),
+      });
+      if (!res.ok) throw new Error('Could not save your payment. Please try again.');
+
+      await loadFund();
+      setPayMessage({ type: 'ok', text: 'Payment recorded. Thank you!' });
+    } catch (err) {
+      setPayMessage({ type: 'error', text: err.message || 'Payment failed. Please try again.' });
+    } finally {
+      setPayBusy(false);
+    }
   };
 
   const handleEmergencyCall = () => {
@@ -134,9 +228,12 @@ export default function StudentDashboard() {
             <p className="text-xs font-semibold text-white">{student?.name || 'Student'}</p>
             <p className="mt-1 text-[10px] text-[#F5A623]">Reg No: {student?.registerNo || student?.email}</p>
             <p className="text-[10px] text-white/60">Dept: {student?.department || 'N/A'}</p>
+            {student?.classSection && (
+              <p className="text-[10px] text-white/60">Class: {student.classSection}</p>
+            )}
           </div>
 
-          {/* Emergency Support button placed at the top of sidebar */}
+          {/* Emergency Support */}
           <div className="p-4 mx-4 mb-4 bg-rose-500/20 border border-rose-500/30 rounded-2xl">
             <p className="text-xs font-bold text-rose-200 mb-2 flex items-center gap-1.5">
               <ShieldAlert size={14} /> Emergency Support
@@ -173,41 +270,75 @@ export default function StudentDashboard() {
               Welcome back, {student?.name || 'Participant'}!
             </h1>
             <p className="mt-2 text-sm text-slate-500">
-              Manage your fest fund payments, view program schedules, duties, and live stage results.
+              Manage your fest fund payment, view program schedules, duties, and live stage results.
             </p>
           </div>
         </header>
 
         <div className="space-y-6">
 
-          {/* SECTION 1: Class Teacher Fund Payment Gateway */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
-                <IndianRupee size={24} />
+          {/* SECTION 1: Fest fund payment */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                  <IndianRupee size={24} />
+                </div>
+                <div>
+                  <h3 className="fest-display text-base font-bold text-[#0B3F46]">
+                    Fest fund due{deptFund ? `: ₹${deptFund.amount}` : ''}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {student?.department
+                      ? `Set by the ${student.department} department. Every student pays once.`
+                      : 'Set by your department. Every student pays once.'}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="fest-display text-base font-bold text-[#0B3F46]">Department Fest Fund Contribution</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Pay your mandatory fest fee securely to your class teacher.</p>
+
+              <div className="flex items-center gap-4">
+                {myPayment ? (
+                  <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
+                    <CheckCircle2 size={16} /> Paid ₹{myPayment.amount}
+                    {myPayment.paidAt ? ` · ${new Date(myPayment.paidAt).toLocaleDateString('en-IN')}` : ''}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startPayment}
+                    disabled={payBusy || !deptFund}
+                    className="bg-[#0B3F46] hover:bg-[#0E4D55] text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {payBusy ? 'Processing...' : deptFund ? `Pay ₹${deptFund.amount}` : 'Pay Fund Now'}
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
-              <span className="font-mono font-bold text-base text-[#0E4D55]">₹300</span>
-              {fundPaid ? (
-                <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
-                  <CheckCircle2 size={16} /> Paid to Class Teacher
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handlePayFund}
-                  className="bg-[#0B3F46] hover:bg-[#0E4D55] text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-sm cursor-pointer"
-                >
-                  Pay Fund Now
-                </button>
-              )}
-            </div>
+            {!deptFund && !myPayment && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                Your department coordinator has not set the fest fund amount yet. You can pay once it is set.
+              </p>
+            )}
+
+            {!student?.classSection && student && !myPayment && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                Your class is not set on your account, so your class teacher cannot see your payment. Please ask your department coordinator.
+              </p>
+            )}
+
+            {payMessage.text && (
+              <p
+                role={payMessage.type === 'error' ? 'alert' : 'status'}
+                className={`rounded-xl border p-3 text-xs font-semibold ${
+                  payMessage.type === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-800'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                }`}
+              >
+                {payMessage.text}
+              </p>
+            )}
           </div>
 
           {/* SECTION 2: Conditional Duty Assignment Notice */}

@@ -1,15 +1,14 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Lock, User, Trophy, AlertCircle } from 'lucide-react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { loginUser } from '../services/api';
 
 const ROLE_ROUTES = {
   committee: '/admin',
   dept_coordinator: '/coordinator',
-  class_teacher: '/teacher',
-  program_teacher: '/teacher',
+  teacher: '/teacher', // every teacher lands here; the dashboard shows tabs based on duties
   student: '/student',
-  volunteer: '/volunteer-dashboard' // Added route mapping for volunteers
+  volunteer: '/volunteer-dashboard',
 };
 
 export default function LoginPage() {
@@ -20,6 +19,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const navigate = useNavigate();
+  const location = useLocation();
+  const notice = location.state?.notice || '';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -33,23 +34,25 @@ export default function LoginPage() {
 
     try {
       const user = await loginUser({ query: query.trim(), password });
+
+      // Block anyone who has not been approved yet, or was rejected
+      if (user.rejected) {
+        throw new Error('Your registration was rejected. Please contact the fest committee.');
+      }
+      if (user.approved === false) {
+        throw new Error('Your registration is still waiting for approval. Please try again later.');
+      }
+
       let role = user.role || user.baseType;
 
-      if (role === 'teacher') {
-        if (user.duties?.includes('dept_coordinator')) {
-          role = 'dept_coordinator';
-        } else if (user.duties?.includes('class_teacher')) {
-          role = 'class_teacher';
-        } else {
-          role = 'class_teacher'; // Default teacher mapping
-        }
-      } else if (role === 'student') {
-        // Check if the user has a volunteer duty or role
-        if (user.duties?.includes('volunteer') || user.role === 'volunteer') {
-          role = 'volunteer';
-        } else {
-          role = 'student';
-        }
+      if (user.duties?.includes('dept_coordinator') || role === 'dept_coordinator') {
+        role = 'dept_coordinator';
+      } else if (user.baseType === 'teacher' || role === 'teacher' || role === 'class_teacher') {
+        // One teacher dashboard for every teacher. Class teacher and program duties
+        // come from the teacher's saved duties and assignments, not from the login role.
+        role = 'teacher';
+      } else if (user.baseType === 'student' || role === 'student' || role === 'volunteer') {
+        role = user.duties?.includes('volunteer') || user.role === 'volunteer' ? 'volunteer' : 'student';
       }
 
       // Admin goes straight to /admin; others append their unique ID
@@ -92,8 +95,14 @@ export default function LoginPage() {
             <p className="mt-2 text-sm text-slate-600">Teachers use Email/Staff ID. Students use Register No & DOB.</p>
           </div>
 
+          {notice && !error && (
+            <div role="status" className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+              {notice}
+            </div>
+          )}
+
           {error && (
-            <div className="mb-6 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            <div role="alert" className="mb-6 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               <AlertCircle size={18} className="shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
@@ -113,19 +122,19 @@ export default function LoginPage() {
               <div className="relative">
                 <Lock className="absolute left-3.5 top-3 h-5 w-5 text-slate-400" />
                 <input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} className={`${inputClass} pr-11`} required />
-                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-slate-500">
+                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-slate-500" aria-label={showPassword ? 'Hide password' : 'Show password'}>
                   {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                 </button>
               </div>
             </div>
 
-            <button type="submit" disabled={loading} className="w-full rounded-xl bg-[#0E4D55] py-3.5 text-sm font-semibold text-white transition hover:bg-[#0B3F46]">
+            <button type="submit" disabled={loading} className="w-full rounded-xl bg-[#0E4D55] py-3.5 text-sm font-semibold text-white transition hover:bg-[#0B3F46] disabled:opacity-60">
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
 
           <div className="mt-6 text-center text-xs text-slate-500 border-t border-slate-200 pt-4">
-            New teacher or coordinator? <Link to="/register" className="font-semibold text-[#0B3F46] hover:underline">Register here</Link>
+            New teacher, student or volunteer? <Link to="/register" className="font-semibold text-[#0B3F46] hover:underline">Register here</Link>
           </div>
         </div>
       </main>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   GraduationCap,
@@ -16,134 +16,164 @@ import {
   AlertCircle,
   ShieldAlert,
   BadgeCheck,
-  PhoneCall
+  PhoneCall,
 } from 'lucide-react';
-import { rosterKey,fundSubmissionsKey } from '../../utils/deptKeys';
+import { rosterKey, normalizeDept } from '../../utils/deptKeys';
 
 const API_BASE = 'http://localhost:3000';
+
+const sameId = (a, b) => String(a) === String(b);
+
+// localStorage hook that reloads whenever the key changes.
+// Pass key = null until the teacher is known, so data never lands under the wrong key.
+function useKeyedStorage(key, initialValue) {
+  const [stored, setStored] = useState({ key: null, value: initialValue });
+
+  useEffect(() => {
+    if (!key) return;
+    let loaded = initialValue;
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved) loaded = JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading', key, e);
+    }
+    setStored({ key, value: loaded });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  useEffect(() => {
+    if (!key || stored.key !== key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(stored.value));
+    } catch (e) {
+      console.error('Error saving', key, e);
+    }
+  }, [stored, key]);
+
+  const value = key && stored.key === key ? stored.value : initialValue;
+
+  const setValue = (next) => {
+    setStored((prev) => {
+      const current = key && prev.key === key ? prev.value : initialValue;
+      return { key, value: typeof next === 'function' ? next(current) : next };
+    });
+  };
+
+  return [value, setValue];
+}
 
 export default function TeacherDashboard() {
   const { id } = useParams();
   const [teacher, setTeacher] = useState(null);
+  const [profileError, setProfileError] = useState('');
 
-  // Fetch or load teacher profile from URL ID or localStorage
+  // Always load the latest profile from the server, so duties given by the
+  // coordinator show up without needing a new login.
   useEffect(() => {
-    if (id) {
-      fetch(`${API_BASE}/users/${id}`)
-        .then(res => res.json())
-        .then(data => setTeacher(data))
-        .catch(err => console.error('Failed to fetch teacher profile', err));
-    } else {
-      const saved = localStorage.getItem('fest_user');
-      if (saved) {
-        try {
-          setTeacher(JSON.parse(saved));
-        } catch (e) {
-          console.error(e);
-        }
-      }
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem('fest_user') || 'null');
+    } catch (e) {
+      saved = null;
     }
+    const uid = id || saved?.id;
+
+    if (!uid) {
+      if (saved) setTeacher(saved);
+      return;
+    }
+
+    fetch(`${API_BASE}/users/${uid}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Profile not found');
+        return res.json();
+      })
+      .then((data) => {
+        setTeacher(data);
+        setProfileError('');
+      })
+      .catch((err) => {
+        console.error('Failed to fetch teacher profile', err);
+        if (saved) setTeacher(saved);
+        else setProfileError('Could not load your profile. Is the server running?');
+      });
   }, [id]);
 
-  const teacherKey = teacher?.id || teacher?.email || 'default_teacher';
-  const dept = teacher?.department || 'Computer Science (CSE)';
+  const teacherKey = teacher ? teacher.id || teacher.email : null;
+  const dept = teacher?.department?.trim() || 'Department';
+  const deptKey = normalizeDept(dept);
   const teacherName = teacher?.name || '';
+
+  // ---- Duties come from saved data, not from the login role ----
+  const classSection = teacher?.classSection || '';
   const isClassTeacher =
-  teacher?.role === 'class_teacher' ||
-  (Array.isArray(teacher?.duties) && teacher.duties.includes('class_teacher'));
+    Array.isArray(teacher?.duties) &&
+    teacher.duties.includes('class_teacher') &&
+    !!classSection;
 
-  // State keys for strict data isolation
-  const participantsKey = `teacher_participants_${teacherKey}`;
-  const classFundsKey = `teacher_class_funds_${teacherKey}`;
-  const committeeDutiesKey = `teacher_committee_duties_${teacherKey}`;
-
-  // Dynamically load programs assigned to this specific teacher across all department coordinators in localStorage
+  // Programs assigned to this teacher by the department coordinator (saved on the server)
   const [assignedEvents, setAssignedEvents] = useState([]);
 
   useEffect(() => {
-    if (!teacherName) return;
+    if (!teacher?.id) return;
+    let active = true;
 
+    Promise.all([
+      fetch(`${API_BASE}/programs`).then((r) => (r.ok ? r.json() : [])),
+      fetch(`${API_BASE}/fests`).then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([programs, fests]) => {
+        if (!active) return;
+        const publishedIds = (Array.isArray(fests) ? fests : [])
+          .filter((f) => f.published)
+          .map((f) => f.id);
+
+        const mine = (Array.isArray(programs) ? programs : []).filter(
+          (p) =>
+            publishedIds.some((fid) => sameId(fid, p.festId)) &&
+            ((p.assignments || {})[deptKey] || []).some((tid) => sameId(tid, teacher.id))
+        );
+
+        setAssignedEvents(
+          mine.map((p) => ({
+            id: String(p.id),
+            festName: (Array.isArray(fests) ? fests : []).find((f) => sameId(f.id, p.festId))?.name || '',
+            eventName: p.name,
+            eventType: p.kind === 'group' ? 'Group' : 'Single',
+            maxGroupSize: p.maxGroupSize || null,
+          }))
+        );
+      })
+      .catch((err) => {
+        console.error('Error loading teacher assignments:', err);
+        if (active) setAssignedEvents([]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [teacher?.id, deptKey]);
+
+  const hasProgramDuty = assignedEvents.length > 0;
+
+  // State keys for strict data isolation (null until the teacher is loaded)
+  const participantsKey = teacherKey ? `teacher_participants_${teacherKey}` : null;
+  const committeeDutiesKey = teacherKey ? `teacher_committee_duties_${teacherKey}` : null;
+
+  const [participants, setParticipants] = useKeyedStorage(participantsKey, []);
+
+  // Committee duties assigned by the fest committee (read only)
+  const [committeeDuties, setCommitteeDuties] = useState([]);
+  useEffect(() => {
+    if (!committeeDutiesKey) return;
     try {
-      const teacherNameNormalized = teacherName.trim().toLowerCase().replace(/\s+/g, ' ');
-      let allAssignments = [];
-
-      Object.keys(localStorage).forEach((key) => {
-        if (key.startsWith('coord_assignments_') || key === 'coord_assignments') {
-          try {
-            const saved = JSON.parse(localStorage.getItem(key));
-            if (Array.isArray(saved)) {
-              allAssignments = [
-                ...allAssignments,
-                ...saved.map(item => ({
-                  ...item,
-                  sourceDepartment: key.replace('coord_assignments_', '')
-                }))
-              ];
-            }
-          } catch (error) {
-            console.error('Invalid assignment data format:', error);
-          }
-        }
-      });
-
-      const teacherProgs = allAssignments.filter(item => {
-        const assignedTeacher = (item.teacher || '').trim().toLowerCase().replace(/\s+/g, ' ');
-        return assignedTeacher === teacherNameNormalized;
-      });
-
-      const formattedEvents = teacherProgs.map((item, index) => ({
-        id: item.id || index + 1,
-        eventName: item.program,
-        eventType: /group|team/i.test(item.category || '') ? 'Group' : 'Single'
-      }));
-
-      setAssignedEvents(formattedEvents);
-    } catch (error) {
-      console.error('Error loading teacher assignments:', error);
-      setAssignedEvents([]);
+      const saved = localStorage.getItem(committeeDutiesKey);
+      setCommitteeDuties(saved ? JSON.parse(saved) : []);
+    } catch (e) {
+      setCommitteeDuties([]);
     }
-  }, [teacherName]);
-
-  // Registered participants (isolated per teacher)
-  const [participants, setParticipants] = useState(() => {
-    const saved = localStorage.getItem(participantsKey);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
-  });
-
-  useEffect(() => {
-    if (teacherKey) {
-      localStorage.setItem(participantsKey, JSON.stringify(participants));
-    }
-  }, [participants, participantsKey, teacherKey]);
-
-  // Committee duties assigned by the fest committee (isolated per teacher)
-  const [committeeDuties] = useState(() => {
-    const saved = localStorage.getItem(committeeDutiesKey);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
-  });
-
-  // Class teacher fund details initialized as an empty array
-  const [classFunds, setClassFunds] = useState(() => {
-    const saved = localStorage.getItem(classFundsKey);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
-  });
-
-  useEffect(() => {
-    if (teacherKey) {
-      localStorage.setItem(classFundsKey, JSON.stringify(classFunds));
-    }
-  }, [classFunds, classFundsKey, teacherKey]);
-
-  const [fundRemittedToCoordinator, setFundRemittedToCoordinator] = useState(false);
+  }, [committeeDutiesKey]);
 
   const [selectedEventId, setSelectedEventId] = useState('');
   const [studentName, setStudentName] = useState('');
@@ -153,19 +183,19 @@ export default function TeacherDashboard() {
   const [phone, setPhone] = useState('');
   const [groupMembers, setGroupMembers] = useState('');
 
+  // Keep the department field in step with the teacher's department once it loads
   useEffect(() => {
-    if (assignedEvents.length > 0 && !selectedEventId) {
+    setDepartment(dept);
+  }, [dept]);
+
+  useEffect(() => {
+    if (assignedEvents.length > 0 && !assignedEvents.some((ev) => sameId(ev.id, selectedEventId))) {
       setSelectedEventId(String(assignedEvents[0].id));
     }
   }, [assignedEvents, selectedEventId]);
 
-  const [newStudentName, setNewStudentName] = useState('');
-  const [newRollNo, setNewRollNo] = useState('');
-  const [newFestFeeDue, setNewFestFeeDue] = useState('300');
-
   const chosenEvent =
-    assignedEvents.find(ev => ev.id === Number(selectedEventId)) ||
-    assignedEvents[0];
+    assignedEvents.find((ev) => sameId(ev.id, selectedEventId)) || assignedEvents[0];
 
   const isGroupEvent = chosenEvent?.eventType === 'Group';
 
@@ -175,7 +205,7 @@ export default function TeacherDashboard() {
 
     let memberList = [];
     if (isGroupEvent && groupMembers.trim()) {
-      memberList = groupMembers.split(',').map(m => m.trim()).filter(Boolean);
+      memberList = groupMembers.split(',').map((m) => m.trim()).filter(Boolean);
     }
 
     const newParticipant = {
@@ -188,10 +218,10 @@ export default function TeacherDashboard() {
       semester: semester.trim(),
       phone: phone.trim(),
       members: memberList,
-      status: 'Pending Submission'
+      status: 'Pending Submission',
     };
 
-    setParticipants(prev => [...prev, newParticipant]);
+    setParticipants((prev) => [...prev, newParticipant]);
     setStudentName('');
     setStudentId('');
     setSemester('');
@@ -200,130 +230,164 @@ export default function TeacherDashboard() {
   };
 
   const handleDeleteParticipant = (participantId) => {
-    setParticipants(prev => prev.filter(p => p.id !== participantId));
+    setParticipants((prev) => prev.filter((p) => p.id !== participantId));
   };
 
-  const submittedCount = participants.filter(p => p.status === 'Submitted to Coordinator').length;
+  const submittedCount = participants.filter((p) => p.status === 'Submitted to Coordinator').length;
   const pendingCount = participants.length - submittedCount;
 
-  // Fully integrated workflow handler to push teacher participant rosters to the department coordinator portal
- const handleSubmitRoster = () => {
-  if (participants.length === 0) {
-    alert('No participant records available to submit.');
-    return;
-  }
+  // Push this teacher's participant roster to the department coordinator portal
+  const handleSubmitRoster = () => {
+    if (participants.length === 0) {
+      alert('No participant records available to submit.');
+      return;
+    }
 
-  const now = new Date().toISOString();
-  const teacherDisplayName = teacher?.name || 'Faculty';
+    const now = new Date().toISOString();
+    const teacherDisplayName = teacher?.name || 'Faculty';
 
-  const updatedParticipants = participants.map((p) => ({
-    ...p,
-    status: 'Submitted to Coordinator',
-    submittedBy: teacherDisplayName,
-    submittedAt: now,
-  }));
+    const updatedParticipants = participants.map((p) => ({
+      ...p,
+      status: 'Submitted to Coordinator',
+      submittedBy: teacherDisplayName,
+      submittedAt: now,
+    }));
 
-  setParticipants(updatedParticipants);
+    setParticipants(updatedParticipants);
 
-  const key = rosterKey(dept);
-  let existing = [];
-  try {
-    existing = JSON.parse(localStorage.getItem(key) || '[]');
-  } catch (e) {
-    existing = [];
-  }
+    const key = rosterKey(dept);
+    let existing = [];
+    try {
+      existing = JSON.parse(localStorage.getItem(key) || '[]');
+    } catch (e) {
+      existing = [];
+    }
 
-  const others = existing.filter((r) => r.teacherName !== teacherDisplayName);
-  others.push({
-    teacherName: teacherDisplayName,
-    teacherEmail: teacher?.email || '',
-    department: dept,
-    participants: updatedParticipants,
-    submittedAt: now,
-  });
-
-  localStorage.setItem(key, JSON.stringify(others));
-  console.log('Roster saved to key:', key);
-
-  alert(`Successfully submitted ${participants.length} participant records to the Department Coordinator for ${dept}!`);
-};
-
-  const handleAddClassStudent = (e) => {
-    e.preventDefault();
-    if (!newStudentName.trim() || !newRollNo.trim() || !newFestFeeDue) return;
-
-    const fee = Number(newFestFeeDue);
-    const entry = {
-      id: Date.now(),
-      studentName: newStudentName.trim(),
-      rollNo: newRollNo.trim(),
-      festFeeDue: fee,
-      amountPaid: fee,
-      status: 'Paid'
-    };
-
-    setClassFunds(prev => [...prev, entry]);
-    setNewStudentName('');
-    setNewRollNo('');
-    setNewFestFeeDue('300');
-  };
-
-  const handleUpdateStudentPayment = (id, paidAmount) => {
-    const updated = classFunds.map(item => {
-      if (item.id === id) {
-        const paid = Number(paidAmount);
-        let status = 'Pending';
-        if (paid >= item.festFeeDue) status = 'Paid';
-        else if (paid > 0) status = 'Partial';
-        return { ...item, amountPaid: paid, status };
-      }
-      return item;
+    const others = existing.filter((r) => r.teacherName !== teacherDisplayName);
+    others.push({
+      teacherName: teacherDisplayName,
+      teacherEmail: teacher?.email || '',
+      department: dept,
+      participants: updatedParticipants,
+      submittedAt: now,
     });
-    setClassFunds(updated);
+
+    localStorage.setItem(key, JSON.stringify(others));
+
+    alert(`Successfully submitted ${participants.length} participant records to the Department Coordinator for ${dept}!`);
   };
 
-  const totalClassCollection = classFunds.reduce((sum, item) => sum + (Number(item.amountPaid) || 0), 0);
+  // ---- Class fund: her students pay from their own dashboards; she only sees the result ----
+  const [classStudents, setClassStudents] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [deptFund, setDeptFund] = useState(null);
+  const [fundMessage, setFundMessage] = useState({ type: '', text: '' });
+  const [fundBusy, setFundBusy] = useState(false);
 
- const handleSendFullAmountToCoordinator = () => {
-  if (classFunds.length === 0) {
-    alert('No class fund records available to send.');
-    return;
-  }
+  const loadFundData = useCallback(async () => {
+    if (!teacher?.id || !isClassTeacher) return;
+    const get = (path) => fetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : []));
+    try {
+      const [users, pays, funds] = await Promise.all([get('/users'), get('/payments'), get('/deptFunds')]);
+      setClassStudents(
+        (Array.isArray(users) ? users : []).filter(
+          (u) =>
+            u.baseType === 'student' &&
+            u.approved !== false &&
+            !u.rejected &&
+            normalizeDept(u.department || '') === deptKey &&
+            u.classSection === classSection
+        )
+      );
+      setPayments(Array.isArray(pays) ? pays : []);
+      setDeptFund((Array.isArray(funds) ? funds : []).find((f) => f.deptKey === deptKey) || null);
+    } catch (err) {
+      console.error('Failed to load class fund data', err);
+    }
+  }, [teacher?.id, isClassTeacher, classSection, deptKey]);
 
-  const key = fundSubmissionsKey(dept);
-  let existing = [];
-  try {
-    existing = JSON.parse(localStorage.getItem(key) || '[]');
-  } catch (e) {
-    existing = [];
-  }
+  useEffect(() => {
+    loadFundData();
+    window.addEventListener('focus', loadFundData);
+    return () => window.removeEventListener('focus', loadFundData);
+  }, [loadFundData]);
 
-  // replace this teacher's earlier submission so resending never double-counts
-  const others = existing.filter((r) => r.teacherKey !== teacherKey);
-  others.push({
-    teacherKey,
-    teacherName: teacher?.name || 'Faculty',
-    teacherEmail: teacher?.email || '',
-    department: dept,
-    totalAmount: totalClassCollection,
-    paidCount: classFunds.filter((s) => Number(s.amountPaid) > 0).length,
-    totalStudents: classFunds.length,
-    students: classFunds,
-    sentAt: new Date().toISOString(),
-  });
+  const paidPaymentOf = (studentId) =>
+    payments.find((p) => sameId(p.studentId, studentId) && p.status === 'paid');
 
-  localStorage.setItem(key, JSON.stringify(others));
-  setFundRemittedToCoordinator(true);
-  alert(`Successfully transferred the full class fund collection of ₹${totalClassCollection} to the Department Coordinator!`);
-};
+  const paidStudents = classStudents.filter((u) => paidPaymentOf(u.id));
+  const totalClassCollection = paidStudents.reduce(
+    (sum, u) => sum + (Number(paidPaymentOf(u.id).amount) || 0),
+    0
+  );
+
+  // Cash handed to the class teacher can be recorded by her
+  const handleMarkCashPaid = async (student) => {
+    if (!deptFund?.amount) {
+      setFundMessage({ type: 'error', text: 'The fest fund amount has not been set by your coordinator yet.' });
+      return;
+    }
+    if (paidPaymentOf(student.id)) return;
+    setFundBusy(true);
+    setFundMessage({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: student.id,
+          studentName: student.name,
+          registerNo: student.registerNo || '',
+          department: dept,
+          deptKey,
+          classSection,
+          amount: Number(deptFund.amount),
+          currency: 'INR',
+          status: 'paid',
+          provider: 'cash',
+          providerRef: null,
+          recordedBy: teacher.id,
+          paidAt: new Date().toISOString(),
+        }),
+      });
+      if (!res.ok) throw new Error('Could not save the payment.');
+      await loadFundData();
+      setFundMessage({ type: 'ok', text: `${student.name} marked as paid in cash.` });
+    } catch (err) {
+      setFundMessage({ type: 'error', text: err.message });
+    } finally {
+      setFundBusy(false);
+    }
+  };
+
+  // Only cash entries can be undone here. Online payments are never edited by the teacher.
+  const handleUndoCash = async (student) => {
+    const pay = paidPaymentOf(student.id);
+    if (!pay || pay.provider !== 'cash') return;
+    if (!window.confirm(`Undo the cash payment recorded for ${student.name}?`)) return;
+    setFundBusy(true);
+    setFundMessage({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API_BASE}/payments/${pay.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Could not undo the payment.');
+      await loadFundData();
+      setFundMessage({ type: 'ok', text: `Cash payment for ${student.name} removed.` });
+    } catch (err) {
+      setFundMessage({ type: 'error', text: err.message });
+    } finally {
+      setFundBusy(false);
+    }
+  };
 
   const handleEmergencyCall = () => {
     alert('Connecting to Fest Emergency Volunteer Response Team (Hotline: +91 98765 43210)...');
   };
 
   const teacherInitials = teacher?.name
-    ? teacher.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()
+    ? teacher.name.split(' ').map((n) => n[0]).join('').substring(0, 2).toUpperCase()
     : 'TR';
+
+  const hasAnyDuty = isClassTeacher || hasProgramDuty || committeeDuties.length > 0;
 
   return (
     <div className="min-h-screen bg-[#F5F8F8] text-[#173B40] flex flex-col md:flex-row font-['DM_Sans',sans-serif]">
@@ -359,11 +423,14 @@ export default function TeacherDashboard() {
                 <p className="text-[10px] text-[#F5A623]">
                   {dept}
                 </p>
+                {isClassTeacher && (
+                  <p className="text-[10px] text-white/70 mt-0.5">Class teacher: {classSection}</p>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Emergency Support button placed at the top */}
+          {/* Emergency Support */}
           <div className="p-4 mx-4 mb-4 bg-rose-500/20 border border-rose-500/30 rounded-2xl">
             <p className="text-xs font-bold text-rose-200 mb-2 flex items-center gap-1.5">
               <ShieldAlert size={14} /> Emergency Support
@@ -383,7 +450,7 @@ export default function TeacherDashboard() {
 
             <div className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold bg-[#F5A623] text-[#0B3F46] shadow-lg">
               <Users size={18} />
-              <span>Assigned Event Entries</span>
+              <span>My Duties</span>
               <ArrowUpRight size={15} className="ml-auto" />
             </div>
           </nav>
@@ -408,13 +475,25 @@ export default function TeacherDashboard() {
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold text-[#D6336C] uppercase tracking-wider mb-2">
               <span className="w-2 h-2 rounded-full bg-[#D6336C]" />
-              Faculty Workspace & Isolated Management
+              Faculty Workspace
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-[#0B3F46]">
               Teacher Dashboard ({teacher?.name || 'Faculty'})
             </h1>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {isClassTeacher && (
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  Class teacher · {classSection}
+                </span>
+              )}
+              {hasProgramDuty && (
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  Program data entry · {assignedEvents.length} {assignedEvents.length === 1 ? 'program' : 'programs'}
+                </span>
+              )}
+            </div>
             <p className="text-sm text-[#718589] mt-2">
-              Manage assigned program participants, committee duties, and student fest funds for {dept}.
+              Your duties for {dept} appear below as your department coordinator assigns them.
             </p>
           </div>
 
@@ -427,45 +506,65 @@ export default function TeacherDashboard() {
           </Link>
         </header>
 
+        {profileError && (
+          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {profileError}
+          </p>
+        )}
+
+        {/* No duties yet */}
+        {teacher && !hasAnyDuty && (
+          <section className="bg-white border border-[#E4ECEC] rounded-3xl p-8 text-center shadow-sm">
+            <BadgeCheck size={34} className="mx-auto text-[#A8B8BA] mb-3" />
+            <h2 className="text-lg font-extrabold text-[#0B3F46]">No duties assigned yet</h2>
+            <p className="text-sm text-[#718589] mt-2 max-w-md mx-auto">
+              Your account is approved. Your department coordinator will assign you as a class teacher
+              and/or give you programs for data entry. Refresh this page after they do.
+            </p>
+          </section>
+        )}
+
         {/* Overview Cards */}
-<div className={`grid grid-cols-1 gap-4 ${isClassTeacher ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+        {(isClassTeacher || hasProgramDuty) && (
+          <div className={`grid grid-cols-1 gap-4 ${isClassTeacher ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+            <div className="bg-white border border-[#E4ECEC] rounded-2xl p-5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="w-11 h-11 rounded-xl bg-[#E6F1F2] text-[#0B3F46] flex items-center justify-center">
+                  <Users size={21} />
+                </div>
+                <span className="text-xs font-semibold text-[#718589]">Participants</span>
+              </div>
+              <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">{participants.length}</h3>
+              <p className="text-xs text-[#718589] mt-1">Total registered students</p>
+            </div>
+
+            {isClassTeacher && (
               <div className="bg-white border border-[#E4ECEC] rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="w-11 h-11 rounded-xl bg-[#E6F1F2] text-[#0B3F46] flex items-center justify-center">
-                <Users size={21} />
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-xl bg-[#FFF3D6] text-[#C47A08] flex items-center justify-center">
+                    <Wallet size={21} />
+                  </div>
+                  <span className="text-xs font-semibold text-[#718589]">Class Fund</span>
+                </div>
+                <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">₹{totalClassCollection}</h3>
+                <p className="text-xs text-[#718589] mt-1">Fund collected for {classSection}</p>
               </div>
-              <span className="text-xs font-semibold text-[#718589]">Participants</span>
-            </div>
-            <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">{participants.length}</h3>
-            <p className="text-xs text-[#718589] mt-1">Total registered students</p>
-          </div>
+            )}
 
-      {isClassTeacher && (
-          <div className="bg-white border border-[#E4ECEC] rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="w-11 h-11 rounded-xl bg-[#FFF3D6] text-[#C47A08] flex items-center justify-center">
-                <Wallet size={21} />
+            <div className="bg-white border border-[#E4ECEC] rounded-2xl p-5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="w-11 h-11 rounded-xl bg-[#FCE7EF] text-[#D6336C] flex items-center justify-center">
+                  <AlertCircle size={21} />
+                </div>
+                <span className="text-xs font-semibold text-[#718589]">Pending</span>
               </div>
-              <span className="text-xs font-semibold text-[#718589]">Class Fund</span>
+              <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">{pendingCount}</h3>
+              <p className="text-xs text-[#718589] mt-1">Entries awaiting submission</p>
             </div>
-            <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">₹{totalClassCollection}</h3>
-            <p className="text-xs text-[#718589] mt-1">Total class fest fund collected</p>
           </div>
-      )}
+        )}
 
-          <div className="bg-white border border-[#E4ECEC] rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="w-11 h-11 rounded-xl bg-[#FCE7EF] text-[#D6336C] flex items-center justify-center">
-                <AlertCircle size={21} />
-              </div>
-              <span className="text-xs font-semibold text-[#718589]">Pending</span>
-            </div>
-            <h3 className="text-3xl font-extrabold text-[#0B3F46] mt-4">{pendingCount}</h3>
-            <p className="text-xs text-[#718589] mt-1">Entries awaiting submission</p>
-          </div>
-        </div>
-
-        {/* SECTION 1: Fest Committee Duties Assigned (Rendered ONLY if explicitly assigned) */}
+        {/* SECTION 1: Fest Committee Duties (only if assigned) */}
         {committeeDuties.length > 0 && (
           <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
             <div className="flex items-center gap-3 mb-5">
@@ -479,7 +578,7 @@ export default function TeacherDashboard() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {committeeDuties.map(duty => (
+              {committeeDuties.map((duty) => (
                 <div key={duty.id} className="bg-[#F8FAFA] border border-[#DCE7E7] rounded-2xl p-4 flex flex-col justify-between">
                   <div>
                     <div className="flex items-center justify-between mb-2">
@@ -501,339 +600,356 @@ export default function TeacherDashboard() {
           </section>
         )}
 
-        {/* SECTION 2: Class Teacher Fund Collection & Transfer to Coordinator */}
+        {/* SECTION 2: Class fund status (only for class teachers) */}
         {isClassTeacher && (
-
-        <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 bg-[#E6F5EC] text-[#218653] rounded-xl flex items-center justify-center">
-                <IndianRupee size={21} />
-              </div>
-              <div>
-                <h2 className="text-lg font-extrabold text-[#0B3F46]">Class Teacher Department Fest Fund Collection</h2>
-                <p className="text-xs text-[#718589] mt-1">Update student fest fund contributions and send the full collection amount to the Dept Coordinator.</p>
-              </div>
-            </div>
-
-            <button
-              onClick={handleSendFullAmountToCoordinator}
-              className="inline-flex items-center justify-center gap-2 bg-[#218653] hover:bg-[#196941] text-white font-extrabold py-3 px-5 rounded-xl text-xs transition shadow-sm"
-            >
-              <Send size={15} />
-              Send Full Class Fund (₹{totalClassCollection}) to Dept Coordinator
-            </button>
-          </div>
-
-          {fundRemittedToCoordinator && (
-            <div className="mb-6 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold flex items-center gap-2">
-              <CheckCircle2 size={16} className="text-emerald-700" />
-              Full class fund collection amount of ₹{totalClassCollection} has been successfully sent to the Department Coordinator!
-            </div>
-          )}
-
-          {/* Quick Add Student */}
-          <form onSubmit={handleAddClassStudent} className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 p-4 bg-[#F8FAFA] rounded-2xl border border-[#DCE7E7]">
-            <input
-              type="text"
-              placeholder="Student Name"
-              value={newStudentName}
-              onChange={e => setNewStudentName(e.target.value)}
-              className="bg-white border border-[#DCE7E7] rounded-xl px-4 py-2.5 text-xs text-[#173B40] outline-none focus:border-[#F5A623]"
-              required
-            />
-            <input
-              type="text"
-              placeholder="Roll No / ID"
-              value={newRollNo}
-              onChange={e => setNewRollNo(e.target.value)}
-              className="bg-white border border-[#DCE7E7] rounded-xl px-4 py-2.5 text-xs text-[#173B40] outline-none focus:border-[#F5A623]"
-              required
-            />
-            <div className="flex gap-2">
-              <input
-                type="number"
-                placeholder="Fest Fee (₹)"
-                value={newFestFeeDue}
-                onChange={e => setNewFestFeeDue(e.target.value)}
-                className="w-full bg-white border border-[#DCE7E7] rounded-xl px-4 py-2.5 text-xs text-[#173B40] outline-none focus:border-[#F5A623]"
-                required
-              />
-              <button type="submit" className="bg-[#0B3F46] hover:bg-[#0B6870] text-white font-bold px-4 py-2.5 rounded-xl text-xs transition shrink-0">
-                Add
-              </button>
-            </div>
-          </form>
-
-          {/* Class Fund Table (Fest Fee Due column completely removed) */}
-          {classFunds.length > 0 && (
-  <div className="overflow-x-auto">
-    <table className="w-full text-left min-w-[550px]">
-      <thead>
-        <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
-          <th className="px-4 py-3 font-bold">Student Name & Roll</th>
-          <th className="px-4 py-3 font-bold">Amount Paid (₹)</th>
-          <th className="px-4 py-3 font-bold">Status</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-[#EDF1F1]">
-        {classFunds.map(item => (
-          <tr key={item.id} className="hover:bg-[#F8FAFA] transition">
-            <td className="px-4 py-3">
-              <p className="font-bold text-sm text-[#173B40]">{item.studentName}</p>
-              <p className="text-xs text-[#718589] font-mono">Roll: {item.rollNo}</p>
-            </td>
-            <td className="px-4 py-3">
-              <input
-                type="number"
-                value={item.amountPaid}
-                onChange={e => handleUpdateStudentPayment(item.id, e.target.value)}
-                className="w-28 bg-[#F5F8F8] border border-[#DCE7E7] rounded-lg px-3 py-1.5 text-xs font-bold text-[#173B40] outline-none focus:border-[#F5A623]"
-              />
-            </td>
-            <td className="px-4 py-3">
-              <span className={`inline-flex px-2.5 py-1 rounded-lg text-[10px] font-bold ${
-                item.status === 'Paid' ? 'bg-[#E6F5EC] text-[#218653]' :
-                item.status === 'Partial' ? 'bg-[#FFF3D6] text-[#B7791F]' : 'bg-[#FCE7EF] text-[#D6336C]'
-              }`}>
-                {item.status}
-              </span>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-)}
-
-        </section>
- )}
-        
-
-        {/* SECTION 3: Student Participant Registration for Assigned Programs */}
-        <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-11 h-11 bg-[#E6F1F2] text-[#0B3F46] rounded-xl flex items-center justify-center">
-              <ClipboardList size={21} />
-            </div>
-            <div>
-              <h2 className="text-lg font-extrabold text-[#0B3F46]">Enter Student Details for Assigned Programs</h2>
-              <p className="text-xs text-[#718589] mt-1">Register students for programs assigned to you by your dept coordinator.</p>
-            </div>
-          </div>
-
-          {assignedEvents.length === 0 ? (
-            <div className="p-6 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs font-bold">
-              ⚠️ No programs have been assigned to you by your Department Coordinator yet.
-            </div>
-          ) : (
-            <form onSubmit={handleAddParticipant} className="space-y-5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                <div className="sm:col-span-2 xl:col-span-1">
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Select Assigned Event</label>
-                  <select
-                    value={selectedEventId}
-                    onChange={e => setSelectedEventId(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                  >
-                    {assignedEvents.map(ev => (
-                      <option key={ev.id} value={ev.id}>
-                        {ev.eventName} [{ev.eventType}]
-                      </option>
-                    ))}
-                  </select>
+          <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 bg-[#E6F5EC] text-[#218653] rounded-xl flex items-center justify-center">
+                  <IndianRupee size={21} />
                 </div>
-
                 <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Student Full Name</label>
-                  <input
-                    type="text"
-                    placeholder={isGroupEvent ? 'Team Leader Name' : 'Enter student name'}
-                    value={studentName}
-                    onChange={e => setStudentName(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Student ID / Roll Number</label>
-                  <input
-                    type="text"
-                    placeholder="Enter student ID"
-                    value={studentId}
-                    onChange={e => setStudentId(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Department</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Computer Science"
-                    value={department}
-                    onChange={e => setDepartment(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Semester / Year</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. S6"
-                    value={semester}
-                    onChange={e => setSemester(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Contact Phone Number</label>
-                  <input
-                    type="tel"
-                    placeholder="Enter phone number"
-                    value={phone}
-                    onChange={e => setPhone(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                  />
+                  <h2 className="text-lg font-extrabold text-[#0B3F46]">Fest Fund Status · {classSection}</h2>
+                  <p className="text-xs text-[#718589] mt-1">
+                    Students pay from their own dashboards. This list updates by itself.
+                  </p>
                 </div>
               </div>
 
-              {isGroupEvent && (
-                <div>
-                  <label className="block text-xs font-bold text-[#456166] mb-2">Group Members (Comma-separated names & IDs)</label>
-                  <input
-                    type="text"
-                    placeholder="Ananya S. (ID-02), Rahul V. (ID-03)"
-                    value={groupMembers}
-                    onChange={e => setGroupMembers(e.target.value)}
-                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
-                  />
-                </div>
-              )}
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-[#EDF1F1]">
-                <p className="text-xs text-[#718589]">
-                  Note: Department fest funds are collected separately. Register event participants below.
+              <div className="text-right">
+                <p className="text-xs text-[#718589]">Fund per student</p>
+                <p className="font-mono text-lg font-bold text-[#0B3F46]">
+                  {deptFund ? `₹${deptFund.amount}` : 'Not set'}
                 </p>
+              </div>
+            </div>
+
+            {!deptFund && (
+              <p className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                Your department coordinator has not set the fest fund amount yet. Students cannot pay until it is set.
+              </p>
+            )}
+
+            {fundMessage.text && (
+              <p
+                role={fundMessage.type === 'error' ? 'alert' : 'status'}
+                className={`mb-5 rounded-xl border px-4 py-3 text-xs font-bold ${
+                  fundMessage.type === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-800'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                }`}
+              >
+                {fundMessage.text}
+              </p>
+            )}
+
+            <div className="mb-5 grid grid-cols-3 gap-3 text-center">
+              <div className="rounded-2xl bg-[#F8FAFA] border border-[#DCE7E7] p-3">
+                <p className="text-xl font-extrabold text-[#0B3F46]">{classStudents.length}</p>
+                <p className="text-[11px] text-[#718589]">Students</p>
+              </div>
+              <div className="rounded-2xl bg-[#E6F5EC] border border-emerald-200 p-3">
+                <p className="text-xl font-extrabold text-[#218653]">{paidStudents.length}</p>
+                <p className="text-[11px] text-[#718589]">Paid</p>
+              </div>
+              <div className="rounded-2xl bg-[#FCE7EF] border border-rose-200 p-3">
+                <p className="text-xl font-extrabold text-[#D6336C]">{classStudents.length - paidStudents.length}</p>
+                <p className="text-[11px] text-[#718589]">Unpaid</p>
+              </div>
+            </div>
+
+            {classStudents.length === 0 ? (
+              <p className="p-8 text-center text-xs text-[#91A1A3]">
+                No approved students in {classSection} yet. Students appear here after they register with this class and are approved.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left min-w-[560px]">
+                  <thead>
+                    <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
+                      <th className="px-4 py-3 font-bold">Student</th>
+                      <th className="px-4 py-3 font-bold">Status</th>
+                      <th className="px-4 py-3 font-bold text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EDF1F1]">
+                    {classStudents.map((stu) => {
+                      const pay = paidPaymentOf(stu.id);
+                      return (
+                        <tr key={stu.id} className="hover:bg-[#F8FAFA] transition">
+                          <td className="px-4 py-3">
+                            <p className="font-bold text-sm text-[#173B40]">{stu.name}</p>
+                            <p className="text-xs text-[#718589] font-mono">Reg: {stu.registerNo || '—'}</p>
+                          </td>
+                          <td className="px-4 py-3">
+                            {pay ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#E6F5EC] text-[#218653]">
+                                <CheckCircle2 size={12} />
+                                Paid ₹{pay.amount} · {pay.provider === 'cash' ? 'cash' : 'online'}
+                              </span>
+                            ) : (
+                              <span className="inline-flex px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#FCE7EF] text-[#D6336C]">
+                                Unpaid
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {!pay && (
+                              <button
+                                type="button"
+                                disabled={fundBusy || !deptFund}
+                                onClick={() => handleMarkCashPaid(stu)}
+                                className="rounded-lg border border-[#DCE7E7] bg-white px-3 py-1.5 text-xs font-bold text-[#0B3F46] hover:bg-[#F5F8F8] disabled:opacity-50"
+                              >
+                                Mark paid (cash)
+                              </button>
+                            )}
+                            {pay && pay.provider === 'cash' && (
+                              <button
+                                type="button"
+                                disabled={fundBusy}
+                                onClick={() => handleUndoCash(stu)}
+                                className="rounded-lg px-3 py-1.5 text-xs font-bold text-[#D6336C] hover:bg-[#FCE7EF] disabled:opacity-50"
+                              >
+                                Undo
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* SECTION 3: Program data entry (only for teachers assigned to programs) */}
+        {hasProgramDuty && (
+          <>
+            <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-11 h-11 bg-[#E6F1F2] text-[#0B3F46] rounded-xl flex items-center justify-center">
+                  <ClipboardList size={21} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-extrabold text-[#0B3F46]">Enter Student Details for Assigned Programs</h2>
+                  <p className="text-xs text-[#718589] mt-1">Register students for programs assigned to you by your dept coordinator.</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleAddParticipant} className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div className="sm:col-span-2 xl:col-span-1">
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Select Assigned Event</label>
+                    <select
+                      value={selectedEventId}
+                      onChange={(e) => setSelectedEventId(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                    >
+                      {assignedEvents.map((ev) => (
+                        <option key={ev.id} value={ev.id}>
+                          {ev.eventName}{ev.festName ? ` · ${ev.festName}` : ''} [{ev.eventType}]
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Student Full Name</label>
+                    <input
+                      type="text"
+                      placeholder={isGroupEvent ? 'Team Leader Name' : 'Enter student name'}
+                      value={studentName}
+                      onChange={(e) => setStudentName(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Student ID / Roll Number</label>
+                    <input
+                      type="text"
+                      placeholder="Enter student ID"
+                      value={studentId}
+                      onChange={(e) => setStudentId(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Department</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Computer Science"
+                      value={department}
+                      onChange={(e) => setDepartment(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Semester / Year</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. S6"
+                      value={semester}
+                      onChange={(e) => setSemester(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">Contact Phone Number</label>
+                    <input
+                      type="tel"
+                      placeholder="Enter phone number"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                    />
+                  </div>
+                </div>
+
+                {isGroupEvent && (
+                  <div>
+                    <label className="block text-xs font-bold text-[#456166] mb-2">
+                      Group Members (Comma-separated names & IDs)
+                      {chosenEvent?.maxGroupSize ? ` · up to ${chosenEvent.maxGroupSize}` : ''}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ananya S. (ID-02), Rahul V. (ID-03)"
+                      value={groupMembers}
+                      onChange={(e) => setGroupMembers(e.target.value)}
+                      className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                    />
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-[#EDF1F1]">
+                  <p className="text-xs text-[#718589]">
+                    Note: Department fest funds are collected separately. Register event participants below.
+                  </p>
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center gap-2 bg-[#F5A623] hover:bg-[#FFB83D] text-[#0B3F46] font-extrabold py-3 px-6 rounded-xl transition shadow-sm"
+                  >
+                    <Plus size={18} />
+                    Save Student Entry
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            {/* Participants Roster */}
+            <section className="bg-white border border-[#E4ECEC] rounded-3xl shadow-sm overflow-hidden">
+              <div className="p-5 sm:p-6 border-b border-[#E4ECEC] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-extrabold text-[#0B3F46]">Registered Participants Roster</h2>
+                  <p className="text-xs text-[#718589] mt-1">Review participant information and submission status.</p>
+                </div>
+
                 <button
-                  type="submit"
-                  className="inline-flex items-center justify-center gap-2 bg-[#F5A623] hover:bg-[#FFB83D] text-[#0B3F46] font-extrabold py-3 px-6 rounded-xl transition shadow-sm"
+                  onClick={handleSubmitRoster}
+                  disabled={participants.length === 0 || pendingCount === 0}
+                  className="inline-flex items-center justify-center gap-2 bg-[#0B3F46] hover:bg-[#0B6870] disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 rounded-xl text-xs font-bold transition shadow-sm"
                 >
-                  <Plus size={18} />
-                  Save Student Entry
+                  <Send size={16} />
+                  Submit Rosters to Coordinator
                 </button>
               </div>
-            </form>
-          )}
-        </section>
 
-        {/* Participants Roster */}
-        <section className="bg-white border border-[#E4ECEC] rounded-3xl shadow-sm overflow-hidden">
-          <div className="p-5 sm:p-6 border-b border-[#E4ECEC] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-extrabold text-[#0B3F46]">Registered Participants Roster</h2>
-              <p className="text-xs text-[#718589] mt-1">Review participant information and submission status.</p>
-            </div>
-
-            <button
-              onClick={handleSubmitRoster}
-              disabled={participants.length === 0 || pendingCount === 0}
-              className="inline-flex items-center justify-center gap-2 bg-[#0B3F46] hover:bg-[#0B6870] disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 rounded-xl text-xs font-bold transition shadow-sm"
-            >
-              <Send size={16} />
-              Submit Rosters to Coordinator
-            </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left min-w-[900px]">
-              <thead>
-                <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
-                  <th className="px-5 py-4 font-bold">Student Details</th>
-                  <th className="px-5 py-4 font-bold">Academic Info</th>
-                  <th className="px-5 py-4 font-bold">Assigned Event</th>
-                  <th className="px-5 py-4 font-bold">Status</th>
-                  <th className="px-5 py-4 font-bold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#EDF1F1]">
-                {participants.length === 0 ? (
-                  <tr>
-                    <td colSpan="5" className="px-5 py-12 text-center">
-                      <Users size={32} className="mx-auto text-[#A8B8BA] mb-3" />
-                      <p className="text-sm font-bold text-[#456166]">No participants registered yet</p>
-                      <p className="text-xs text-[#91A1A3] mt-1">Use the form above to add student details.</p>
-                    </td>
-                  </tr>
-                ) : (
-                  participants.map(item => (
-                    <tr key={item.id} className="hover:bg-[#F8FAFA] transition align-top">
-                      <td className="px-5 py-4">
-                        <div className="flex items-start gap-3">
-                          <div className="w-9 h-9 rounded-full bg-[#E6F1F2] text-[#0B3F46] flex items-center justify-center font-bold text-xs shrink-0">
-                            {item.studentName.charAt(0).toUpperCase()}
-                          </div>
-                          <div>
-                            <p className="font-bold text-sm text-[#173B40]">{item.studentName}</p>
-                            <p className="text-xs text-[#0B6870] font-mono mt-1">ID: {item.studentId}</p>
-                            {item.phone && (
-                              <p className="text-xs text-[#718589] mt-1 flex items-center gap-1">
-                                <Phone size={11} /> {item.phone}
-                              </p>
-                            )}
-                            {item.members?.length > 0 && (
-                              <p className="text-xs text-[#718589] mt-2 max-w-[220px]">
-                                <span className="font-bold text-[#456166]">Team:</span> {item.members.join(', ')}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <p className="text-sm font-bold text-[#173B40]">{item.department}</p>
-                        <p className="text-xs text-[#718589] mt-1">{item.semester || 'Semester not provided'}</p>
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <p className="text-sm font-bold text-[#173B40]">{item.eventName}</p>
-                        <span className={`inline-flex mt-2 px-2.5 py-1 rounded-lg text-[10px] font-bold ${
-                          item.eventType === 'Single' ? 'bg-[#E6F1F2] text-[#0B6870]' : 'bg-[#FCE7EF] text-[#D6336C]'
-                        }`}>
-                          {item.eventType} Event
-                        </span>
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold ${
-                          item.status === 'Submitted to Coordinator' ? 'bg-[#E6F5EC] text-[#218653]' : 'bg-[#FFF3D6] text-[#B7791F]'
-                        }`}>
-                          {item.status === 'Submitted to Coordinator' && <CheckCircle2 size={13} />}
-                          {item.status}
-                        </span>
-                      </td>
-
-                      <td className="px-5 py-4 text-right">
-                        <button
-                          onClick={() => handleDeleteParticipant(item.id)}
-                          title="Delete participant"
-                          className="p-2 rounded-lg text-[#D6336C] hover:bg-[#FCE7EF] transition"
-                        >
-                          <Trash2 size={17} />
-                        </button>
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left min-w-[900px]">
+                  <thead>
+                    <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
+                      <th className="px-5 py-4 font-bold">Student Details</th>
+                      <th className="px-5 py-4 font-bold">Academic Info</th>
+                      <th className="px-5 py-4 font-bold">Assigned Event</th>
+                      <th className="px-5 py-4 font-bold">Status</th>
+                      <th className="px-5 py-4 font-bold text-right">Actions</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                  </thead>
+                  <tbody className="divide-y divide-[#EDF1F1]">
+                    {participants.length === 0 ? (
+                      <tr>
+                        <td colSpan="5" className="px-5 py-12 text-center">
+                          <Users size={32} className="mx-auto text-[#A8B8BA] mb-3" />
+                          <p className="text-sm font-bold text-[#456166]">No participants registered yet</p>
+                          <p className="text-xs text-[#91A1A3] mt-1">Use the form above to add student details.</p>
+                        </td>
+                      </tr>
+                    ) : (
+                      participants.map((item) => (
+                        <tr key={item.id} className="hover:bg-[#F8FAFA] transition align-top">
+                          <td className="px-5 py-4">
+                            <div className="flex items-start gap-3">
+                              <div className="w-9 h-9 rounded-full bg-[#E6F1F2] text-[#0B3F46] flex items-center justify-center font-bold text-xs shrink-0">
+                                {item.studentName.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-bold text-sm text-[#173B40]">{item.studentName}</p>
+                                <p className="text-xs text-[#0B6870] font-mono mt-1">ID: {item.studentId}</p>
+                                {item.phone && (
+                                  <p className="text-xs text-[#718589] mt-1 flex items-center gap-1">
+                                    <Phone size={11} /> {item.phone}
+                                  </p>
+                                )}
+                                {item.members?.length > 0 && (
+                                  <p className="text-xs text-[#718589] mt-2 max-w-[220px]">
+                                    <span className="font-bold text-[#456166]">Team:</span> {item.members.join(', ')}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <p className="text-sm font-bold text-[#173B40]">{item.department}</p>
+                            <p className="text-xs text-[#718589] mt-1">{item.semester || 'Semester not provided'}</p>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <p className="text-sm font-bold text-[#173B40]">{item.eventName}</p>
+                            <span className={`inline-flex mt-2 px-2.5 py-1 rounded-lg text-[10px] font-bold ${
+                              item.eventType === 'Single' ? 'bg-[#E6F1F2] text-[#0B6870]' : 'bg-[#FCE7EF] text-[#D6336C]'
+                            }`}>
+                              {item.eventType} Event
+                            </span>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold ${
+                              item.status === 'Submitted to Coordinator' ? 'bg-[#E6F5EC] text-[#218653]' : 'bg-[#FFF3D6] text-[#B7791F]'
+                            }`}>
+                              {item.status === 'Submitted to Coordinator' && <CheckCircle2 size={13} />}
+                              {item.status}
+                            </span>
+                          </td>
+
+                          <td className="px-5 py-4 text-right">
+                            <button
+                              onClick={() => handleDeleteParticipant(item.id)}
+                              title="Delete participant"
+                              className="p-2 rounded-lg text-[#D6336C] hover:bg-[#FCE7EF] transition"
+                            >
+                              <Trash2 size={17} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        )}
 
         <footer className="mt-10 pt-5 border-t border-[#DCE7E7] flex flex-col sm:flex-row justify-between gap-2 text-xs text-[#91A1A3]">
           <p>© 2026 CampusFest. Faculty Portal.</p>
