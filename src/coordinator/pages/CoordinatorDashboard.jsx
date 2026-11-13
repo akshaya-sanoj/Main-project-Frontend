@@ -13,9 +13,6 @@ import {
   X,
 } from 'lucide-react';
 import {
-  rosterKey,
-  adminSubmittedKey,
-  adminSubmissionsKey,
   normalizeDept,
 } from '../../utils/deptKeys';
 import { API_BASE } from '../../services/api';
@@ -32,7 +29,6 @@ const FONT_CSS = `
 }
 `;
 
-
 async function request(path, options = {}) {
   let res;
   try {
@@ -46,7 +42,7 @@ async function request(path, options = {}) {
   if (!res.ok) {
     const isList = path.split('/').filter(Boolean).length === 1;
     if (res.status === 404 && isList) {
-      throw new Error('The server has no list for this yet. Add "sections", "deptFunds" and "payments" to db.json and restart it.');
+      throw new Error('The server has no list for this yet. Check that db.json has \"fests\", \"programs\", \"sections\", \"deptFunds\", \"payments\" and \"registrations\", then restart it.');
     }
     throw new Error(
       res.status === 404
@@ -157,64 +153,6 @@ export default function CoordinatorDashboard() {
   const deptKey = normalizeDept(dept);
 
   // ==========================================
-  // DATA SENT BY TEACHERS (rosters + fund remittances)
-  // ==========================================
-
-  const [teacherSubmissions, setTeacherSubmissions] = useState([]);
-  const [submittedToAdmin, setSubmittedToAdmin] = useState(false);
-
-  useEffect(() => {
-    if (!coordinator) return;
-
-    const loadTeacherData = () => {
-      // Participant rosters submitted by teachers
-      try {
-        const saved = localStorage.getItem(rosterKey(dept));
-        setTeacherSubmissions(saved ? JSON.parse(saved) : []);
-      } catch (e) {
-        console.error('Failed to parse teacher submissions:', e);
-        setTeacherSubmissions([]);
-      }
-
-      setSubmittedToAdmin(
-        localStorage.getItem(adminSubmittedKey(dept)) === 'true'
-      );
-    };
-
-    loadTeacherData();
-    window.addEventListener('storage', loadTeacherData);
-    window.addEventListener('focus', loadTeacherData);
-
-    return () => {
-      window.removeEventListener('storage', loadTeacherData);
-      window.removeEventListener('focus', loadTeacherData);
-    };
-  }, [coordinator, dept]);
-
-  const handleForwardToAdmin = () => {
-    if (teacherSubmissions.length === 0) {
-      alert('No teacher rosters available to forward to Admin.');
-      return;
-    }
-
-    localStorage.setItem(
-      adminSubmissionsKey(dept),
-      JSON.stringify({
-        department: dept,
-        coordinatorName: coordinator?.name || 'Coordinator',
-        submissions: teacherSubmissions,
-        forwardedAt: new Date().toISOString(),
-      })
-    );
-
-    localStorage.setItem(adminSubmittedKey(dept), 'true');
-    setSubmittedToAdmin(true);
-    alert(
-      `Successfully submitted all department participant lists from ${dept} to the Super Admin!`
-    );
-  };
-
-  // ==========================================
   // SERVER DATA: users, fests, programs
   // ==========================================
 
@@ -225,6 +163,7 @@ export default function CoordinatorDashboard() {
   const [selectedFestId, setSelectedFestId] = useState('');
   const [deptFunds, setDeptFunds] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [teacherError, setTeacherError] = useState('');
   const [teacherNotice, setTeacherNotice] = useState('');
@@ -237,13 +176,14 @@ export default function CoordinatorDashboard() {
   const loadAll = useCallback(async () => {
     // The three fund lists are optional so the page still opens if they are not in db.json yet
     const optional = (path) => request(path).catch(() => []);
-    const [u, f, p, sec, df, pay] = await Promise.all([
+    const [u, f, p, sec, df, pay, regs] = await Promise.all([
       request('/users'),
       request('/fests'),
       request('/programs'),
       optional('/sections'),
       optional('/deptFunds'),
       optional('/payments'),
+      optional('/registrations'),
     ]);
     setUsers(Array.isArray(u) ? u : []);
     setFests(Array.isArray(f) ? f : []);
@@ -251,12 +191,24 @@ export default function CoordinatorDashboard() {
     setSections(Array.isArray(sec) ? sec : []);
     setDeptFunds(Array.isArray(df) ? df : []);
     setPayments(Array.isArray(pay) ? pay : []);
+    setRegistrations(Array.isArray(regs) ? regs : []);
   }, []);
 
   useEffect(() => {
     loadAll()
       .then(() => setLoadError(''))
       .catch((e) => setLoadError(e.message));
+  }, [loadAll]);
+
+  // Keep the page fresh: reload when the window regains focus and every 15 seconds
+  useEffect(() => {
+    const refresh = () => { loadAll().catch(() => {}); };
+    window.addEventListener('focus', refresh);
+    const timer = setInterval(refresh, 15000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      clearInterval(timer);
+    };
   }, [loadAll]);
 
   // Runs a save, reloads, and reports the result
@@ -429,13 +381,70 @@ export default function CoordinatorDashboard() {
   };
 
   // ==========================================
+  // PARTICIPANT ROSTERS (saved on the server)
+  // ==========================================
+
+  // Entries teachers of this department have submitted, for the selected fest
+  const deptRegistrations = registrations.filter(
+    (r) =>
+      r.deptKey === deptKey &&
+      selectedFest &&
+      sameId(r.festId, selectedFest.id) &&
+      r.status !== 'Pending Submission'
+  );
+
+  // Group them by teacher for display
+  const teacherSubmissions = Object.values(
+    deptRegistrations.reduce((acc, r) => {
+      const key = String(r.teacherId);
+      if (!acc[key]) acc[key] = { teacherName: r.teacherName, submittedAt: r.submittedAt, participants: [] };
+      acc[key].participants.push(r);
+      if (String(r.submittedAt || '') > String(acc[key].submittedAt || '')) acc[key].submittedAt = r.submittedAt;
+      return acc;
+    }, {})
+  );
+
+  const toForward = deptRegistrations.filter((r) => r.status === 'Submitted to Coordinator');
+  const forwardedCount = deptRegistrations.length - toForward.length;
+
+  const handleForwardToAdmin = async () => {
+    if (toForward.length === 0) {
+      setTeacherError('There are no new entries to forward.');
+      setTeacherNotice('');
+      return;
+    }
+    const now = new Date().toISOString();
+    await run(
+      () =>
+        Promise.all(
+          toForward.map((r) =>
+            request(
+              `/registrations/${r.id}`,
+              send('PATCH', {
+                status: 'Forwarded to Admin',
+                forwardedAt: now,
+                forwardedBy: coordinator?.name || 'Coordinator',
+                forwardedById: coordinator?.id ?? null,
+              })
+            )
+          )
+        ),
+      `Forwarded ${toForward.length} ${toForward.length === 1 ? 'entry' : 'entries'} from ${dept} to the Super Admin.`
+    );
+  };
+
+  // ==========================================
   // CLASSES AND FEST FUND (saved on the server)
   // ==========================================
 
   const [fundInput, setFundInput] = useState('');
   const [sectionInput, setSectionInput] = useState('');
 
-  const deptFund = deptFunds.find((f) => f.deptKey === deptKey) || null;
+  // The fund is set per fest: one amount for this department in the selected fest
+  const deptFund =
+    (selectedFest &&
+      deptFunds.find((f) => f.deptKey === deptKey && sameId(f.festId, selectedFest.id))) ||
+    null;
   const deptSections = sections.filter((s) => s.deptKey === deptKey);
 
   // Students of this department (approved ones count towards totals)
@@ -444,8 +453,15 @@ export default function CoordinatorDashboard() {
   );
   const deptStudents = allDeptStudents.filter((u) => u.approved !== false);
 
+  // Payments are counted for the selected fest only
   const paidPaymentOf = (studentId) =>
-    payments.find((p) => sameId(p.studentId, studentId) && p.status === 'paid');
+    payments.find(
+      (p) =>
+        sameId(p.studentId, studentId) &&
+        p.status === 'paid' &&
+        selectedFest &&
+        sameId(p.festId, selectedFest.id)
+    );
 
   const classTeacherOfSection = (name) =>
     deptTeachers.find((t) => isClassTeacher(t) && t.classSection === name);
@@ -468,19 +484,30 @@ export default function CoordinatorDashboard() {
 
   const handleSaveFund = async (e) => {
     e.preventDefault();
+    if (!selectedFest) {
+      setTeacherError('Choose a fest first.');
+      setTeacherNotice('');
+      return;
+    }
     const amount = Number(fundInput);
     if (!Number.isFinite(amount) || amount <= 0) {
       setTeacherError('Enter a fund amount greater than 0.');
       setTeacherNotice('');
       return;
     }
-    const body = { deptKey, department: dept, amount, updatedAt: new Date().toISOString() };
+    const body = {
+      festId: selectedFest.id,
+      deptKey,
+      department: dept,
+      amount,
+      updatedAt: new Date().toISOString(),
+    };
     const ok = await run(
       () =>
         deptFund
           ? request(`/deptFunds/${deptFund.id}`, send('PATCH', body))
           : request('/deptFunds', send('POST', body)),
-      `Fest fund for ${dept} set to ₹${amount}.`
+      `Fest fund for ${dept} in ${selectedFest.name} set to ₹${amount}.`
     );
     if (ok) setFundInput('');
   };
@@ -978,12 +1005,48 @@ export default function CoordinatorDashboard() {
               </p>
             )}
 
+            {/* Fest selector: the fund is set separately for every fest */}
+            {myFests.length === 0 ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+                You have not been appointed as coordinator for any fest yet, so a fest fund cannot be set. Ask the Fest Committee Admin to add you. You can still create classes below.
+              </p>
+            ) : (
+              <section className={`${cardStyle} p-5`}>
+                <div className="w-full max-w-sm">
+                  <label htmlFor="fundFest" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                    Fest
+                  </label>
+                  <select
+                    id="fundFest"
+                    value={selectedFestId}
+                    onChange={(e) => {
+                      setSelectedFestId(e.target.value);
+                      setProgramPick({});
+                      setFundInput('');
+                      setTeacherError('');
+                      setTeacherNotice('');
+                    }}
+                    className={inputStyle}
+                  >
+                    {myFests.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <p className="mt-3 text-xs text-slate-500">
+                  Each fest has its own fund amount and its own payments. Switch the fest to see or change another one.
+                </p>
+              </section>
+            )}
+
             {/* Fund amount + total */}
             <div className="grid gap-6 lg:grid-cols-2">
               <section className={`${cardStyle} p-6`}>
-                <h2 className="fest-display font-bold text-[#0B3F46]">Fest fund per student ({dept})</h2>
+                <h2 className="fest-display font-bold text-[#0B3F46]">
+                  Fest fund per student ({dept}){selectedFest ? ` · ${selectedFest.name}` : ''}
+                </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Every student of {dept} pays this amount from their own dashboard. Each department sets its own.
+                  Every student of {dept} pays this amount for this fest from their own dashboard. Each department sets its own.
                 </p>
                 <p className="mt-4 font-mono text-3xl font-bold text-[#0E4D55]">
                   {deptFund ? `₹${deptFund.amount}` : 'Not set'}
@@ -996,8 +1059,9 @@ export default function CoordinatorDashboard() {
                     value={fundInput}
                     onChange={(e) => setFundInput(e.target.value)}
                     className={inputStyle}
+                    disabled={!selectedFest}
                   />
-                  <button type="submit" disabled={busy} className={smallButton}>
+                  <button type="submit" disabled={busy || !selectedFest} className={smallButton}>
                     {deptFund ? 'Update' : 'Set'}
                   </button>
                 </form>
@@ -1009,7 +1073,9 @@ export default function CoordinatorDashboard() {
               </section>
 
               <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
-                <h2 className="fest-display font-bold text-[#0B3F46]">Collected so far</h2>
+                <h2 className="fest-display font-bold text-[#0B3F46]">
+                  Collected so far{selectedFest ? ` · ${selectedFest.name}` : ''}
+                </h2>
                 <p className="mt-1 text-xs text-slate-500">Calculated from student payments. Nothing to send or forward.</p>
                 <p className="mt-4 font-mono text-3xl font-bold text-[#0E4D55]">₹{totalCollected}</p>
               </section>
@@ -1020,7 +1086,7 @@ export default function CoordinatorDashboard() {
               <div className="border-b border-slate-100 p-5 sm:p-6">
                 <h2 className="fest-display font-bold text-[#0B3F46]">Classes of {dept}</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Create each class here first. Students choose from this list when they register, and you assign a class teacher to it on the My Teachers tab.
+                  Create each class here first. Students choose from this list when they register, and you assign a class teacher to it on the My Teachers tab. Classes stay the same across fests; Paid and Collected below are for the selected fest.
                 </p>
                 <form onSubmit={handleAddSection} className="mt-4 flex max-w-md gap-2">
                   <input
@@ -1194,77 +1260,126 @@ export default function CoordinatorDashboard() {
 
         {activeTab === 'submissions' && (
           <div className="space-y-6">
+            {teacherNotice && (
+              <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                {teacherNotice}
+              </p>
+            )}
+            {(teacherError || loadError) && (
+              <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {teacherError || loadError}
+              </p>
+            )}
+
+            {myFests.length === 0 ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+                You have not been appointed as coordinator for any fest yet, so there are no rosters to show. Ask the Fest Committee Admin to add you.
+              </p>
+            ) : (
+              <section className={`${cardStyle} p-5`}>
+                <div className="w-full max-w-sm">
+                  <label htmlFor="subFest" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                    Fest
+                  </label>
+                  <select
+                    id="subFest"
+                    value={selectedFestId}
+                    onChange={(e) => {
+                      setSelectedFestId(e.target.value);
+                      setProgramPick({});
+                      setTeacherError('');
+                      setTeacherNotice('');
+                    }}
+                    className={inputStyle}
+                  >
+                    {myFests.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </section>
+            )}
+
             <div className={`${cardStyle} p-6 sm:p-8`}>
               <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                 <div>
                   <h2 className="fest-display text-lg font-bold text-[#0B3F46]">
-                    Submitted Teacher Rosters ({dept})
+                    Submitted Teacher Rosters ({dept}){selectedFest ? ` · ${selectedFest.name}` : ''}
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Review student participant lists sent by your teachers
-                    before submitting to Admin.
+                    Review student lists sent by your teachers, then forward them to the Admin. This page refreshes by itself.
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleForwardToAdmin}
-                  disabled={submittedToAdmin || teacherSubmissions.length === 0}
-                  className="flex items-center justify-center gap-2 rounded-xl bg-[#0B3F46] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#0E4D55] disabled:opacity-50"
-                >
-                  <Send className="h-4 w-4 text-[#F5A623]" />
-                  {submittedToAdmin
-                    ? 'Submitted to Admin ✓'
-                    : 'Submit Department Rosters to Admin'}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => loadAll().catch((e) => setTeacherError(e.message))}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-semibold text-[#0B3F46] hover:bg-slate-50"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleForwardToAdmin}
+                    disabled={busy || !selectedFest || toForward.length === 0}
+                    className="flex items-center justify-center gap-2 rounded-xl bg-[#0B3F46] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#0E4D55] disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4 text-[#F5A623]" />
+                    {toForward.length > 0
+                      ? `Forward ${toForward.length} ${toForward.length === 1 ? 'entry' : 'entries'} to Admin`
+                      : forwardedCount > 0
+                        ? 'All forwarded to Admin ✓'
+                        : 'Nothing to forward'}
+                  </button>
+                </div>
               </div>
 
-              {submittedToAdmin && (
+              {forwardedCount > 0 && (
                 <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs font-bold text-emerald-900">
                   <CheckCircle2 size={16} className="text-emerald-700" />
-                  All department rosters have been successfully submitted to
-                  the Super Admin panel!
+                  {forwardedCount} {forwardedCount === 1 ? 'entry has' : 'entries have'} already been forwarded to the Super Admin.
+                  {toForward.length > 0 ? ` ${toForward.length} new ${toForward.length === 1 ? 'entry is' : 'entries are'} waiting to be forwarded.` : ''}
                 </div>
               )}
 
               {teacherSubmissions.length === 0 ? (
                 <p className="py-8 text-center text-xs text-slate-400">
-                  No teacher rosters have been submitted to your department yet.
+                  No teacher rosters have been submitted to your department for this fest yet.
                 </p>
               ) : (
                 <div className="space-y-4">
                   {teacherSubmissions.map((sub, idx) => (
-                    <div
-                      key={idx}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
-                    >
+                    <div key={idx} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
                         <span className="text-sm font-bold text-[#0B3F46]">
                           Faculty: {sub.teacherName}
                         </span>
                         <span className="text-xs text-slate-500">
-                          {new Date(sub.submittedAt).toLocaleString()}
+                          {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : ''}
                         </span>
                       </div>
 
                       <div className="space-y-2">
-                        {sub.participants.map((p, pIdx) => (
+                        {sub.participants.map((p) => (
                           <div
-                            key={pIdx}
+                            key={p.id}
                             className="flex items-center justify-between rounded-xl border border-slate-100 bg-white p-3 text-xs"
                           >
                             <div>
-                              <span className="font-bold text-slate-800">
-                                {p.studentName}
-                              </span>{' '}
+                              <span className="font-bold text-slate-800">{p.studentName}</span>{' '}
                               ({p.studentId}) —{' '}
-                              <span className="font-semibold text-[#0E4D55]">
-                                {p.eventName}
-                              </span>
+                              <span className="font-semibold text-[#0E4D55]">{p.eventName}</span>
                             </div>
 
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-700">
-                              {p.status}
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 font-bold ${
+                                p.status === 'Forwarded to Admin'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-amber-50 text-amber-700'
+                              }`}
+                            >
+                              {p.status === 'Forwarded to Admin' ? 'Forwarded to Admin' : 'Waiting to forward'}
                             </span>
                           </div>
                         ))}

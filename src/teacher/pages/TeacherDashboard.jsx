@@ -18,49 +18,16 @@ import {
   BadgeCheck,
   PhoneCall,
 } from 'lucide-react';
-import { rosterKey, normalizeDept } from '../../utils/deptKeys';
+import { normalizeDept } from '../../utils/deptKeys';
 import { API_BASE } from '../../services/api';
 
 const sameId = (a, b) => String(a) === String(b);
+const norm = (v) => String(v || '').trim().toLowerCase();
 
-// localStorage hook that reloads whenever the key changes.
-// Pass key = null until the teacher is known, so data never lands under the wrong key.
-function useKeyedStorage(key, initialValue) {
-  const [stored, setStored] = useState({ key: null, value: initialValue });
-
-  useEffect(() => {
-    if (!key) return;
-    let loaded = initialValue;
-    try {
-      const saved = localStorage.getItem(key);
-      if (saved) loaded = JSON.parse(saved);
-    } catch (e) {
-      console.error('Error loading', key, e);
-    }
-    setStored({ key, value: loaded });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  useEffect(() => {
-    if (!key || stored.key !== key) return;
-    try {
-      localStorage.setItem(key, JSON.stringify(stored.value));
-    } catch (e) {
-      console.error('Error saving', key, e);
-    }
-  }, [stored, key]);
-
-  const value = key && stored.key === key ? stored.value : initialValue;
-
-  const setValue = (next) => {
-    setStored((prev) => {
-      const current = key && prev.key === key ? prev.value : initialValue;
-      return { key, value: typeof next === 'function' ? next(current) : next };
-    });
-  };
-
-  return [value, setValue];
-}
+// Status of a student entry as it moves up: teacher -> coordinator -> admin
+const PENDING = 'Pending Submission';
+const SUBMITTED = 'Submitted to Coordinator';
+const FORWARDED = 'Forwarded to Admin';
 
 export default function TeacherDashboard() {
   const { id } = useParams();
@@ -137,6 +104,7 @@ export default function TeacherDashboard() {
         setAssignedEvents(
           mine.map((p) => ({
             id: String(p.id),
+            festId: p.festId,
             festName: (Array.isArray(fests) ? fests : []).find((f) => sameId(f.id, p.festId))?.name || '',
             eventName: p.name,
             eventType: p.kind === 'group' ? 'Group' : 'Single',
@@ -157,10 +125,29 @@ export default function TeacherDashboard() {
   const hasProgramDuty = assignedEvents.length > 0;
 
   // State keys for strict data isolation (null until the teacher is loaded)
-  const participantsKey = teacherKey ? `teacher_participants_${teacherKey}` : null;
   const committeeDutiesKey = teacherKey ? `teacher_committee_duties_${teacherKey}` : null;
 
-  const [participants, setParticipants] = useKeyedStorage(participantsKey, []);
+  // Student entries are saved on the server, so the coordinator and admin see them from any computer
+  const [participants, setParticipants] = useState([]);
+  const [regBusy, setRegBusy] = useState(false);
+
+  const loadParticipants = useCallback(async () => {
+    if (!teacher?.id) return;
+    try {
+      const res = await fetch(`${API_BASE}/registrations`);
+      if (!res.ok) throw new Error('Registrations list is missing');
+      const all = await res.json();
+      setParticipants((Array.isArray(all) ? all : []).filter((r) => sameId(r.teacherId, teacher.id)));
+    } catch (err) {
+      console.error('Failed to load registrations', err);
+    }
+  }, [teacher?.id]);
+
+  useEffect(() => {
+    loadParticipants();
+    window.addEventListener('focus', loadParticipants);
+    return () => window.removeEventListener('focus', loadParticipants);
+  }, [loadParticipants]);
 
   // Committee duties assigned by the fest committee (read only)
   const [committeeDuties, setCommitteeDuties] = useState([]);
@@ -198,88 +185,117 @@ export default function TeacherDashboard() {
 
   const isGroupEvent = chosenEvent?.eventType === 'Group';
 
-  const handleAddParticipant = (e) => {
+  const jsonHeaders = { 'Content-Type': 'application/json' };
+  const SAVE_HINT = 'Could not save. Check that "registrations" is in db.json and the server is running.';
+
+  const handleAddParticipant = async (e) => {
     e.preventDefault();
     if (!studentName.trim() || !studentId.trim() || !chosenEvent) return;
+
+    const idText = studentId.trim();
+    if (participants.some((p) => sameId(p.programId, chosenEvent.id) && norm(p.studentId) === norm(idText))) {
+      alert('This student is already entered for this program.');
+      return;
+    }
 
     let memberList = [];
     if (isGroupEvent && groupMembers.trim()) {
       memberList = groupMembers.split(',').map((m) => m.trim()).filter(Boolean);
     }
 
-    const newParticipant = {
-      id: Date.now(),
-      eventName: chosenEvent.eventName,
-      eventType: chosenEvent.eventType,
-      studentName: isGroupEvent ? `${studentName.trim()} (Team Leader)` : studentName.trim(),
-      studentId: studentId.trim(),
-      department: department.trim() || dept,
-      semester: semester.trim(),
-      phone: phone.trim(),
-      members: memberList,
-      status: 'Pending Submission',
-    };
-
-    setParticipants((prev) => [...prev, newParticipant]);
-    setStudentName('');
-    setStudentId('');
-    setSemester('');
-    setPhone('');
-    setGroupMembers('');
+    setRegBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/registrations`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          festId: chosenEvent.festId,
+          festName: chosenEvent.festName,
+          programId: chosenEvent.id,
+          eventName: chosenEvent.eventName,
+          eventType: chosenEvent.eventType,
+          studentName: isGroupEvent ? `${studentName.trim()} (Team Leader)` : studentName.trim(),
+          studentId: idText,
+          department: department.trim() || dept,
+          semester: semester.trim(),
+          phone: phone.trim(),
+          members: memberList,
+          teacherId: teacher.id,
+          teacherName: teacher.name || 'Faculty',
+          teacherEmail: teacher.email || '',
+          teacherDept: dept,
+          deptKey, // the coordinator of this department receives it
+          status: PENDING,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      if (!res.ok) throw new Error(SAVE_HINT);
+      await loadParticipants();
+      setStudentName('');
+      setStudentId('');
+      setSemester('');
+      setPhone('');
+      setGroupMembers('');
+    } catch (err) {
+      alert(err.message || SAVE_HINT);
+    } finally {
+      setRegBusy(false);
+    }
   };
 
-  const handleDeleteParticipant = (participantId) => {
-    setParticipants((prev) => prev.filter((p) => p.id !== participantId));
+  const handleDeleteParticipant = async (item) => {
+    if (item.status === FORWARDED) {
+      alert('This entry has already been forwarded to the Admin and cannot be deleted.');
+      return;
+    }
+    if (!window.confirm(`Delete the entry for ${item.studentName}?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/registrations/${item.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Could not delete the entry.');
+      await loadParticipants();
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
-  const submittedCount = participants.filter((p) => p.status === 'Submitted to Coordinator').length;
-  const pendingCount = participants.length - submittedCount;
+  const pendingCount = participants.filter((p) => p.status === PENDING).length;
 
-  // Push this teacher's participant roster to the department coordinator portal
-  const handleSubmitRoster = () => {
-    if (participants.length === 0) {
-      alert('No participant records available to submit.');
+  // Send this teacher's new entries to the department coordinator
+  const handleSubmitRoster = async () => {
+    const pending = participants.filter((p) => p.status === PENDING);
+    if (pending.length === 0) {
+      alert('There are no new entries to submit.');
       return;
     }
 
     const now = new Date().toISOString();
-    const teacherDisplayName = teacher?.name || 'Faculty';
-
-    const updatedParticipants = participants.map((p) => ({
-      ...p,
-      status: 'Submitted to Coordinator',
-      submittedBy: teacherDisplayName,
-      submittedAt: now,
-    }));
-
-    setParticipants(updatedParticipants);
-
-    const key = rosterKey(dept);
-    let existing = [];
+    setRegBusy(true);
     try {
-      existing = JSON.parse(localStorage.getItem(key) || '[]');
-    } catch (e) {
-      existing = [];
+      await Promise.all(
+        pending.map(async (p) => {
+          const res = await fetch(`${API_BASE}/registrations/${p.id}`, {
+            method: 'PATCH',
+            headers: jsonHeaders,
+            body: JSON.stringify({ status: SUBMITTED, submittedAt: now, submittedBy: teacher?.name || 'Faculty' }),
+          });
+          if (!res.ok) throw new Error('Could not submit some entries. Please try again.');
+        })
+      );
+      await loadParticipants();
+      alert(`Successfully submitted ${pending.length} participant records to the Department Coordinator for ${dept}!`);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setRegBusy(false);
     }
-
-    const others = existing.filter((r) => r.teacherName !== teacherDisplayName);
-    others.push({
-      teacherName: teacherDisplayName,
-      teacherEmail: teacher?.email || '',
-      department: dept,
-      participants: updatedParticipants,
-      submittedAt: now,
-    });
-
-    localStorage.setItem(key, JSON.stringify(others));
-
-    alert(`Successfully submitted ${participants.length} participant records to the Department Coordinator for ${dept}!`);
   };
 
-  // ---- Class fund: her students pay from their own dashboards; she only sees the result ----
+  // ---- Class fund (per fest): her students pay from their own dashboards; she only sees the result ----
   const [classStudents, setClassStudents] = useState([]);
   const [payments, setPayments] = useState([]);
-  const [deptFund, setDeptFund] = useState(null);
+  const [deptFunds, setDeptFunds] = useState([]); // funds set for her department, one per fest
+  const [allFests, setAllFests] = useState([]);
+  const [fundFestId, setFundFestId] = useState('');
   const [fundMessage, setFundMessage] = useState({ type: '', text: '' });
   const [fundBusy, setFundBusy] = useState(false);
 
@@ -287,7 +303,12 @@ export default function TeacherDashboard() {
     if (!teacher?.id || !isClassTeacher) return;
     const get = (path) => fetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : []));
     try {
-      const [users, pays, funds] = await Promise.all([get('/users'), get('/payments'), get('/deptFunds')]);
+      const [users, pays, funds, fests] = await Promise.all([
+        get('/users'),
+        get('/payments'),
+        get('/deptFunds'),
+        get('/fests'),
+      ]);
       setClassStudents(
         (Array.isArray(users) ? users : []).filter(
           (u) =>
@@ -299,7 +320,12 @@ export default function TeacherDashboard() {
         )
       );
       setPayments(Array.isArray(pays) ? pays : []);
-      setDeptFund((Array.isArray(funds) ? funds : []).find((f) => f.deptKey === deptKey) || null);
+      setDeptFunds(
+        (Array.isArray(funds) ? funds : []).filter(
+          (f) => f.deptKey === deptKey && f.festId !== undefined && f.festId !== null
+        )
+      );
+      setAllFests(Array.isArray(fests) ? fests : []);
     } catch (err) {
       console.error('Failed to load class fund data', err);
     }
@@ -311,8 +337,30 @@ export default function TeacherDashboard() {
     return () => window.removeEventListener('focus', loadFundData);
   }, [loadFundData]);
 
+  // Fests for which her department has a fund
+  const fundFests = allFests.filter((f) => deptFunds.some((d) => sameId(d.festId, f.id)));
+  const fundFestKey = fundFests.map((f) => f.id).join(',');
+
+  useEffect(() => {
+    if (fundFests.length > 0 && !fundFests.some((f) => sameId(f.id, fundFestId))) {
+      setFundFestId(String(fundFests[fundFests.length - 1].id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fundFestKey, fundFestId]);
+
+  const selectedFundFest = fundFests.find((f) => sameId(f.id, fundFestId)) || null;
+  const deptFund = selectedFundFest
+    ? deptFunds.find((d) => sameId(d.festId, selectedFundFest.id)) || null
+    : null;
+
   const paidPaymentOf = (studentId) =>
-    payments.find((p) => sameId(p.studentId, studentId) && p.status === 'paid');
+    payments.find(
+      (p) =>
+        sameId(p.studentId, studentId) &&
+        p.status === 'paid' &&
+        selectedFundFest &&
+        sameId(p.festId, selectedFundFest.id)
+    );
 
   const paidStudents = classStudents.filter((u) => paidPaymentOf(u.id));
   const totalClassCollection = paidStudents.reduce(
@@ -322,7 +370,7 @@ export default function TeacherDashboard() {
 
   // Cash handed to the class teacher can be recorded by her
   const handleMarkCashPaid = async (student) => {
-    if (!deptFund?.amount) {
+    if (!selectedFundFest || !deptFund?.amount) {
       setFundMessage({ type: 'error', text: 'The fest fund amount has not been set by your coordinator yet.' });
       return;
     }
@@ -334,6 +382,8 @@ export default function TeacherDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          festId: selectedFundFest.id,
+          festName: selectedFundFest.name,
           studentId: student.id,
           studentName: student.name,
           registerNo: student.registerNo || '',
@@ -351,7 +401,7 @@ export default function TeacherDashboard() {
       });
       if (!res.ok) throw new Error('Could not save the payment.');
       await loadFundData();
-      setFundMessage({ type: 'ok', text: `${student.name} marked as paid in cash.` });
+      setFundMessage({ type: 'ok', text: `${student.name} marked as paid in cash for ${selectedFundFest.name}.` });
     } catch (err) {
       setFundMessage({ type: 'error', text: err.message });
     } finally {
@@ -599,7 +649,7 @@ export default function TeacherDashboard() {
           </section>
         )}
 
-        {/* SECTION 2: Class fund status (only for class teachers) */}
+        {/* SECTION 2: Class fund status per fest (only for class teachers) */}
         {isClassTeacher && (
           <section className="bg-white border border-[#E4ECEC] rounded-3xl p-5 sm:p-7 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
@@ -615,111 +665,130 @@ export default function TeacherDashboard() {
                 </div>
               </div>
 
-              <div className="text-right">
-                <p className="text-xs text-[#718589]">Fund per student</p>
-                <p className="font-mono text-lg font-bold text-[#0B3F46]">
-                  {deptFund ? `₹${deptFund.amount}` : 'Not set'}
-                </p>
-              </div>
+              {deptFund && (
+                <div className="text-right">
+                  <p className="text-xs text-[#718589]">Fund per student</p>
+                  <p className="font-mono text-lg font-bold text-[#0B3F46]">₹{deptFund.amount}</p>
+                </div>
+              )}
             </div>
 
-            {!deptFund && (
-              <p className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
-                Your department coordinator has not set the fest fund amount yet. Students cannot pay until it is set.
-              </p>
-            )}
-
-            {fundMessage.text && (
-              <p
-                role={fundMessage.type === 'error' ? 'alert' : 'status'}
-                className={`mb-5 rounded-xl border px-4 py-3 text-xs font-bold ${
-                  fundMessage.type === 'error'
-                    ? 'border-red-200 bg-red-50 text-red-800'
-                    : 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                }`}
-              >
-                {fundMessage.text}
-              </p>
-            )}
-
-            <div className="mb-5 grid grid-cols-3 gap-3 text-center">
-              <div className="rounded-2xl bg-[#F8FAFA] border border-[#DCE7E7] p-3">
-                <p className="text-xl font-extrabold text-[#0B3F46]">{classStudents.length}</p>
-                <p className="text-[11px] text-[#718589]">Students</p>
-              </div>
-              <div className="rounded-2xl bg-[#E6F5EC] border border-emerald-200 p-3">
-                <p className="text-xl font-extrabold text-[#218653]">{paidStudents.length}</p>
-                <p className="text-[11px] text-[#718589]">Paid</p>
-              </div>
-              <div className="rounded-2xl bg-[#FCE7EF] border border-rose-200 p-3">
-                <p className="text-xl font-extrabold text-[#D6336C]">{classStudents.length - paidStudents.length}</p>
-                <p className="text-[11px] text-[#718589]">Unpaid</p>
-              </div>
-            </div>
-
-            {classStudents.length === 0 ? (
-              <p className="p-8 text-center text-xs text-[#91A1A3]">
-                No approved students in {classSection} yet. Students appear here after they register with this class and are approved.
+            {fundFests.length === 0 ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                Your department coordinator has not set a fest fund amount for any fest yet. Students cannot pay until it is set.
               </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left min-w-[560px]">
-                  <thead>
-                    <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
-                      <th className="px-4 py-3 font-bold">Student</th>
-                      <th className="px-4 py-3 font-bold">Status</th>
-                      <th className="px-4 py-3 font-bold text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#EDF1F1]">
-                    {classStudents.map((stu) => {
-                      const pay = paidPaymentOf(stu.id);
-                      return (
-                        <tr key={stu.id} className="hover:bg-[#F8FAFA] transition">
-                          <td className="px-4 py-3">
-                            <p className="font-bold text-sm text-[#173B40]">{stu.name}</p>
-                            <p className="text-xs text-[#718589] font-mono">Reg: {stu.registerNo || '—'}</p>
-                          </td>
-                          <td className="px-4 py-3">
-                            {pay ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#E6F5EC] text-[#218653]">
-                                <CheckCircle2 size={12} />
-                                Paid ₹{pay.amount} · {pay.provider === 'cash' ? 'cash' : 'online'}
-                              </span>
-                            ) : (
-                              <span className="inline-flex px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#FCE7EF] text-[#D6336C]">
-                                Unpaid
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            {!pay && (
-                              <button
-                                type="button"
-                                disabled={fundBusy || !deptFund}
-                                onClick={() => handleMarkCashPaid(stu)}
-                                className="rounded-lg border border-[#DCE7E7] bg-white px-3 py-1.5 text-xs font-bold text-[#0B3F46] hover:bg-[#F5F8F8] disabled:opacity-50"
-                              >
-                                Mark paid (cash)
-                              </button>
-                            )}
-                            {pay && pay.provider === 'cash' && (
-                              <button
-                                type="button"
-                                disabled={fundBusy}
-                                onClick={() => handleUndoCash(stu)}
-                                className="rounded-lg px-3 py-1.5 text-xs font-bold text-[#D6336C] hover:bg-[#FCE7EF] disabled:opacity-50"
-                              >
-                                Undo
-                              </button>
-                            )}
-                          </td>
+              <>
+                <div className="mb-5 max-w-xs">
+                  <label htmlFor="fundFest" className="block text-xs font-bold text-[#456166] mb-2">Fest</label>
+                  <select
+                    id="fundFest"
+                    value={fundFestId}
+                    onChange={(e) => {
+                      setFundFestId(e.target.value);
+                      setFundMessage({ type: '', text: '' });
+                    }}
+                    className="w-full bg-[#F5F8F8] border border-[#DCE7E7] rounded-xl px-4 py-3 text-sm text-[#173B40] outline-none focus:border-[#F5A623] transition"
+                  >
+                    {fundFests.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {fundMessage.text && (
+                  <p
+                    role={fundMessage.type === 'error' ? 'alert' : 'status'}
+                    className={`mb-5 rounded-xl border px-4 py-3 text-xs font-bold ${
+                      fundMessage.type === 'error'
+                        ? 'border-red-200 bg-red-50 text-red-800'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    }`}
+                  >
+                    {fundMessage.text}
+                  </p>
+                )}
+
+                <div className="mb-5 grid grid-cols-3 gap-3 text-center">
+                  <div className="rounded-2xl bg-[#F8FAFA] border border-[#DCE7E7] p-3">
+                    <p className="text-xl font-extrabold text-[#0B3F46]">{classStudents.length}</p>
+                    <p className="text-[11px] text-[#718589]">Students</p>
+                  </div>
+                  <div className="rounded-2xl bg-[#E6F5EC] border border-emerald-200 p-3">
+                    <p className="text-xl font-extrabold text-[#218653]">{paidStudents.length}</p>
+                    <p className="text-[11px] text-[#718589]">Paid</p>
+                  </div>
+                  <div className="rounded-2xl bg-[#FCE7EF] border border-rose-200 p-3">
+                    <p className="text-xl font-extrabold text-[#D6336C]">{classStudents.length - paidStudents.length}</p>
+                    <p className="text-[11px] text-[#718589]">Unpaid</p>
+                  </div>
+                </div>
+
+                {classStudents.length === 0 ? (
+                  <p className="p-8 text-center text-xs text-[#91A1A3]">
+                    No approved students in {classSection} yet. Students appear here after they register with this class and are approved.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left min-w-[560px]">
+                      <thead>
+                        <tr className="bg-[#F5F8F8] text-[#718589] text-[11px] uppercase tracking-wider">
+                          <th className="px-4 py-3 font-bold">Student</th>
+                          <th className="px-4 py-3 font-bold">Status</th>
+                          <th className="px-4 py-3 font-bold text-right">Action</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                      </thead>
+                      <tbody className="divide-y divide-[#EDF1F1]">
+                        {classStudents.map((stu) => {
+                          const pay = paidPaymentOf(stu.id);
+                          return (
+                            <tr key={stu.id} className="hover:bg-[#F8FAFA] transition">
+                              <td className="px-4 py-3">
+                                <p className="font-bold text-sm text-[#173B40]">{stu.name}</p>
+                                <p className="text-xs text-[#718589] font-mono">Reg: {stu.registerNo || '—'}</p>
+                              </td>
+                              <td className="px-4 py-3">
+                                {pay ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#E6F5EC] text-[#218653]">
+                                    <CheckCircle2 size={12} />
+                                    Paid ₹{pay.amount} · {pay.provider === 'cash' ? 'cash' : 'online'}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#FCE7EF] text-[#D6336C]">
+                                    Unpaid
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {!pay && (
+                                  <button
+                                    type="button"
+                                    disabled={fundBusy || !deptFund}
+                                    onClick={() => handleMarkCashPaid(stu)}
+                                    className="rounded-lg border border-[#DCE7E7] bg-white px-3 py-1.5 text-xs font-bold text-[#0B3F46] hover:bg-[#F5F8F8] disabled:opacity-50"
+                                  >
+                                    Mark paid (cash)
+                                  </button>
+                                )}
+                                {pay && pay.provider === 'cash' && (
+                                  <button
+                                    type="button"
+                                    disabled={fundBusy}
+                                    onClick={() => handleUndoCash(stu)}
+                                    className="rounded-lg px-3 py-1.5 text-xs font-bold text-[#D6336C] hover:bg-[#FCE7EF] disabled:opacity-50"
+                                  >
+                                    Undo
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
             )}
           </section>
         )}
@@ -836,7 +905,8 @@ export default function TeacherDashboard() {
                   </p>
                   <button
                     type="submit"
-                    className="inline-flex items-center justify-center gap-2 bg-[#F5A623] hover:bg-[#FFB83D] text-[#0B3F46] font-extrabold py-3 px-6 rounded-xl transition shadow-sm"
+                    disabled={regBusy}
+                    className="inline-flex items-center justify-center gap-2 disabled:opacity-60 bg-[#F5A623] hover:bg-[#FFB83D] text-[#0B3F46] font-extrabold py-3 px-6 rounded-xl transition shadow-sm"
                   >
                     <Plus size={18} />
                     Save Student Entry
@@ -855,7 +925,7 @@ export default function TeacherDashboard() {
 
                 <button
                   onClick={handleSubmitRoster}
-                  disabled={participants.length === 0 || pendingCount === 0}
+                  disabled={regBusy || participants.length === 0 || pendingCount === 0}
                   className="inline-flex items-center justify-center gap-2 bg-[#0B3F46] hover:bg-[#0B6870] disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 rounded-xl text-xs font-bold transition shadow-sm"
                 >
                   <Send size={16} />
@@ -915,6 +985,7 @@ export default function TeacherDashboard() {
 
                           <td className="px-5 py-4">
                             <p className="text-sm font-bold text-[#173B40]">{item.eventName}</p>
+                        {item.festName && <p className="text-xs text-[#718589] mt-0.5">{item.festName}</p>}
                             <span className={`inline-flex mt-2 px-2.5 py-1 rounded-lg text-[10px] font-bold ${
                               item.eventType === 'Single' ? 'bg-[#E6F1F2] text-[#0B6870]' : 'bg-[#FCE7EF] text-[#D6336C]'
                             }`}>
@@ -924,16 +995,16 @@ export default function TeacherDashboard() {
 
                           <td className="px-5 py-4">
                             <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold ${
-                              item.status === 'Submitted to Coordinator' ? 'bg-[#E6F5EC] text-[#218653]' : 'bg-[#FFF3D6] text-[#B7791F]'
+                              item.status !== PENDING ? 'bg-[#E6F5EC] text-[#218653]' : 'bg-[#FFF3D6] text-[#B7791F]'
                             }`}>
-                              {item.status === 'Submitted to Coordinator' && <CheckCircle2 size={13} />}
+                              {item.status !== PENDING && <CheckCircle2 size={13} />}
                               {item.status}
                             </span>
                           </td>
 
                           <td className="px-5 py-4 text-right">
                             <button
-                              onClick={() => handleDeleteParticipant(item.id)}
+                              onClick={() => handleDeleteParticipant(item)}
                               title="Delete participant"
                               className="p-2 rounded-lg text-[#D6336C] hover:bg-[#FCE7EF] transition"
                             >

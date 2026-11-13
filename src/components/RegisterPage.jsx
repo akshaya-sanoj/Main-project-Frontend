@@ -11,7 +11,8 @@ import {
   Award,
   GraduationCap,
 } from 'lucide-react';
-import { API_BASE } from '../services/api'; 
+import { API_BASE } from '../services/api';
+
 const inputStyle =
   'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-[#0B3F46] focus:ring-2 focus:ring-[#0B3F46]/10';
 

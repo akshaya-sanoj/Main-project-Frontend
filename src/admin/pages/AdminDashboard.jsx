@@ -21,7 +21,6 @@ const FONT_CSS = `
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
 
-
 const LANGUAGES = ['Malayalam', 'English', 'Hindi', 'Arabic', 'Urdu', 'Sanskrit', 'Tamil'];
 
 // Program categories: each one asks for the details that make sense for it
@@ -46,7 +45,7 @@ async function request(path, options = {}) {
   if (!res.ok) {
     const isList = path.split('/').filter(Boolean).length === 1;
     if (res.status === 404 && isList) {
-      throw new Error('The server has no list for this yet. Add "fests" and "programs" to db.json and restart it.');
+      throw new Error('The server has no list for this yet. Check that db.json has \"fests\", \"programs\", \"sections\", \"deptFunds\", \"payments\" and \"registrations\", then restart it.');
     }
     throw new Error(res.status === 404 ? 'That item was not found. It may already have been removed.' : 'The server could not save that. Please try again.');
   }
@@ -165,31 +164,35 @@ export default function AdminDashboard() {
   const [roleFilter, setRoleFilter] = useState('all');
   const [headsForm, setHeadsForm] = useState(null); // committee heads editor, null = closed
   const [coordFestId, setCoordFestId] = useState('');
-
-  // Load department submissions forwarded to Admin from localStorage
-  const [adminSubmissions] = useState(() => {
-    const allSubs = [];
-    Object.keys(localStorage).forEach((key) => {
-      if (key.startsWith('admin_department_submissions_')) {
-        try {
-          allSubs.push(JSON.parse(localStorage.getItem(key)));
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    });
-    return allSubs;
-  });
+  const [registrations, setRegistrations] = useState([]);
+  const [subFestFilter, setSubFestFilter] = useState('all');
 
   const loadAll = useCallback(async () => {
-    const [u, f, p] = await Promise.all([request('/users'), request('/fests'), request('/programs')]);
+    const [u, f, p, regs] = await Promise.all([
+      request('/users'),
+      request('/fests'),
+      request('/programs'),
+      request('/registrations').catch(() => []),
+    ]);
     setUsers(u);
     setFests(f);
     setPrograms(p);
+    setRegistrations(Array.isArray(regs) ? regs : []);
   }, []);
 
   useEffect(() => {
     loadAll().catch((e) => { setError(e.message); setFests([]); });
+  }, [loadAll]);
+
+  // Keep the page fresh: reload when the window regains focus and every 15 seconds
+  useEffect(() => {
+    const refresh = () => { loadAll().catch(() => {}); };
+    window.addEventListener('focus', refresh);
+    const timer = setInterval(refresh, 15000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      clearInterval(timer);
+    };
   }, [loadAll]);
 
   // Pick a fest for the Programs tab as soon as there is one
@@ -243,6 +246,32 @@ export default function AdminDashboard() {
   const festCoordinators = coordinatorUsers.filter((u) =>
     coordFest && Array.isArray(u.festIds) && u.festIds.some((id) => sameId(id, coordFest.id))
   );
+  // Rosters forwarded by department coordinators (saved on the server), grouped by fest and department
+  const forwardedRegs = registrations.filter((r) => r.status === 'Forwarded to Admin');
+  const adminSubmissions = Object.values(
+    forwardedRegs.reduce((acc, r) => {
+      const key = `${r.festId}|${r.deptKey}`;
+      if (!acc[key]) {
+        acc[key] = {
+          festId: r.festId,
+          festName: r.festName || 'Fest',
+          department: r.teacherDept || r.deptKey,
+          coordinatorName: r.forwardedBy || 'Coordinator',
+          forwardedAt: r.forwardedAt,
+          teachers: {},
+        };
+      }
+      const g = acc[key];
+      if (String(r.forwardedAt || '') > String(g.forwardedAt || '')) g.forwardedAt = r.forwardedAt;
+      const tk = String(r.teacherId);
+      if (!g.teachers[tk]) g.teachers[tk] = { teacherName: r.teacherName, participants: [] };
+      g.teachers[tk].participants.push(r);
+      return acc;
+    }, {})
+  ).map((g) => ({ ...g, submissions: Object.values(g.teachers) }));
+  const visibleSubmissions =
+    subFestFilter === 'all' ? adminSubmissions : adminSubmissions.filter((g) => sameId(g.festId, subFestFilter));
+
   // Coordinators from before fests were tracked: not linked to any fest yet
   const unlinkedCoordinators = coordinatorUsers.filter((u) => !Array.isArray(u.festIds) || u.festIds.length === 0);
 
@@ -1286,26 +1315,50 @@ export default function AdminDashboard() {
         {/* SUBMISSIONS */}
         {activeTab === 'submissions' && fests && (
           <section className={`${cardStyle} p-6 sm:p-8 space-y-6`}>
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-[#E6F1F2] p-3 text-[#0B3F46]"><Send className="h-5 w-5" /></div>
-              <div>
-                <h2 className="fest-display text-lg font-bold text-[#0B3F46]">Department Submissions</h2>
-                <p className="mt-1 text-xs text-slate-500">Review participant lists forwarded by department coordinators.</p>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="rounded-xl bg-[#E6F1F2] p-3 text-[#0B3F46]"><Send className="h-5 w-5" /></div>
+                <div>
+                  <h2 className="fest-display text-lg font-bold text-[#0B3F46]">Department Submissions</h2>
+                  <p className="mt-1 text-xs text-slate-500">Participant lists forwarded by department coordinators. This page refreshes by itself.</p>
+                </div>
+              </div>
+              <div className="flex items-end gap-3">
+                <div className="w-48">
+                  <Field id="subFest" label="Fest">
+                    <select id="subFest" value={subFestFilter} onChange={(e) => setSubFestFilter(e.target.value)} className={inputStyle}>
+                      <option value="all">All fests</option>
+                      {fests.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadAll().catch((e) => setError(e.message))}
+                  className={`${ghostButton} px-4 py-3 text-sm`}
+                >
+                  Refresh
+                </button>
               </div>
             </div>
 
-            {adminSubmissions.length === 0 ? (
+            {visibleSubmissions.length === 0 ? (
               <p className="text-xs text-slate-400 text-center py-12">No department rosters have been submitted to Admin yet.</p>
             ) : (
               <div className="space-y-6">
-                {adminSubmissions.map((sub, idx) => (
-                  <div key={idx} className="border border-slate-200 rounded-2xl p-5 bg-slate-50 space-y-4">
+                {visibleSubmissions.map((sub) => (
+                  <div key={`${sub.festId}|${sub.department}`} className="border border-slate-200 rounded-2xl p-5 bg-slate-50 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-200">
                       <div>
-                        <h3 className="font-extrabold text-[#0B3F46] text-base">Department: {sub.department}</h3>
+                        <h3 className="font-extrabold text-[#0B3F46] text-base">
+                          Department: {sub.department}
+                          <span className="ml-2 rounded-full bg-[#E6F1F2] px-2.5 py-0.5 text-xs font-semibold text-[#0B3F46]">{sub.festName}</span>
+                        </h3>
                         <p className="text-xs text-slate-500">Forwarded by Coordinator: <span className="font-semibold text-slate-700">{sub.coordinatorName}</span></p>
                       </div>
-                      <span className="text-xs font-semibold text-slate-500">Forwarded on: {new Date(sub.forwardedAt).toLocaleString()}</span>
+                      <span className="text-xs font-semibold text-slate-500">
+                        Forwarded on: {sub.forwardedAt ? new Date(sub.forwardedAt).toLocaleString() : ''}
+                      </span>
                     </div>
 
                     <div className="space-y-3">
@@ -1313,15 +1366,15 @@ export default function AdminDashboard() {
                         <div key={tIdx} className="bg-white p-4 rounded-xl border border-slate-200 space-y-2">
                           <p className="text-xs font-bold text-[#0E4D55]">Teacher In-Charge: {teacherSub.teacherName}</p>
                           <div className="space-y-1.5 pl-2">
-                            {teacherSub.participants.map((p, pIdx) => (
-                              <div key={pIdx} className="flex flex-col sm:flex-row sm:items-center justify-between text-xs bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                            {teacherSub.participants.map((p) => (
+                              <div key={p.id} className="flex flex-col sm:flex-row sm:items-center justify-between text-xs bg-slate-50 p-2.5 rounded-lg border border-slate-100">
                                 <div>
                                   <span className="font-bold text-slate-800">{p.studentName}</span> (ID: <span className="font-mono">{p.studentId}</span>)
                                   <span className="mx-2 text-slate-400">|</span>
                                   Program: <span className="font-semibold text-[#0B3F46]">{p.eventName}</span> ({p.eventType})
                                 </div>
                                 <span className="mt-1 sm:mt-0 inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full w-fit">
-                                  <CheckCircle2 size={12} /> {p.status}
+                                  <CheckCircle2 size={12} /> Forwarded
                                 </span>
                               </div>
                             ))}

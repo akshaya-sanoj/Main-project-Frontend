@@ -6,12 +6,12 @@ import {
 } from 'lucide-react';
 import { normalizeDept } from '../../utils/deptKeys';
 import { API_BASE } from '../../services/api';
+
 const FONT_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap');
 .fest-display { font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif; }
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
-
 
 const sameId = (a, b) => String(a) === String(b);
 
@@ -19,10 +19,9 @@ export default function StudentDashboard() {
   const [student, setStudent] = useState(null);
   const [myPrograms, setMyPrograms] = useState([]);
 
-  // Fest fund
-  const [deptFund, setDeptFund] = useState(null);
-  const [myPayment, setMyPayment] = useState(null);
-  const [payBusy, setPayBusy] = useState(false);
+  // Fest fund: one due per fest that has a fund set for this student's department
+  const [fundDues, setFundDues] = useState([]);
+  const [payBusyId, setPayBusyId] = useState(null);
   const [payMessage, setPayMessage] = useState({ type: '', text: '' });
 
   // Load the logged-in student, then refresh the profile from the server
@@ -46,18 +45,26 @@ export default function StudentDashboard() {
 
   const deptKey = normalizeDept(student?.department || '');
 
-  // Load this student's fund amount and payment from the server
+  // Load the fund amount and payment status of every fest that has a fund for this department
   const loadFund = useCallback(async () => {
     if (!student?.id) return;
     const get = (path) => fetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : []));
     try {
-      const [funds, pays] = await Promise.all([get('/deptFunds'), get('/payments')]);
-      setDeptFund((Array.isArray(funds) ? funds : []).find((f) => f.deptKey === deptKey) || null);
-      setMyPayment(
-        (Array.isArray(pays) ? pays : []).find(
-          (p) => sameId(p.studentId, student.id) && p.status === 'paid'
-        ) || null
-      );
+      const [funds, pays, fests] = await Promise.all([get('/deptFunds'), get('/payments'), get('/fests')]);
+      const dues = (Array.isArray(fests) ? fests : [])
+        .map((fest) => {
+          const fund = (Array.isArray(funds) ? funds : []).find(
+            (f) => f.deptKey === deptKey && sameId(f.festId, fest.id)
+          );
+          if (!fund) return null;
+          const payment = (Array.isArray(pays) ? pays : []).find(
+            (p) => sameId(p.studentId, student.id) && sameId(p.festId, fest.id) && p.status === 'paid'
+          );
+          return { fest, fund, payment: payment || null };
+        })
+        .filter(Boolean)
+        .sort((a, b) => String(a.fest.festDate || '').localeCompare(String(b.fest.festDate || '')));
+      setFundDues(dues);
     } catch (e) {
       console.error('Failed to load fund data', e);
     }
@@ -67,7 +74,7 @@ export default function StudentDashboard() {
     loadFund();
   }, [loadFund]);
 
-  // Load programs this student was registered for by incharge teachers
+  // Load programs this student was entered for by incharge teachers (saved on the server)
   useEffect(() => {
     if (!student) return;
 
@@ -79,51 +86,46 @@ export default function StudentDashboard() {
       return;
     }
 
-    const loadPrograms = () => {
-      const found = [];
+    const loadPrograms = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/registrations`);
+        if (!res.ok) throw new Error('Registrations list is missing');
+        const list = await res.json();
+        const found = [];
 
-      Object.keys(localStorage).forEach((key) => {
-        if (!key.startsWith('teacher_participants_')) return;
+        (Array.isArray(list) ? list : []).forEach((p) => {
+          const isLeader = norm(p.studentId) === myId;
+          const isMember =
+            Array.isArray(p.members) &&
+            p.members.some((m) => norm(m).split(/[^a-z0-9_-]+/).includes(myId));
 
-        try {
-          const list = JSON.parse(localStorage.getItem(key) || '[]');
-          if (!Array.isArray(list)) return;
+          if (isLeader || isMember) {
+            found.push({
+              id: p.id,
+              eventName: p.eventName,
+              festName: p.festName || '',
+              eventType: p.eventType,
+              role: isLeader
+                ? (p.eventType === 'Group' ? 'Team Leader' : 'Participant')
+                : 'Team Member',
+              status: p.status,
+            });
+          }
+        });
 
-          list.forEach((p) => {
-            const isLeader = norm(p.studentId) === myId;
-            const isMember =
-              Array.isArray(p.members) &&
-              p.members.some((m) =>
-                norm(m).split(/[^a-z0-9_-]+/).includes(myId)
-              );
-
-            if (isLeader || isMember) {
-              found.push({
-                id: `${key}_${p.id}`,
-                eventName: p.eventName,
-                eventType: p.eventType,
-                role: isLeader
-                  ? (p.eventType === 'Group' ? 'Team Leader' : 'Participant')
-                  : 'Team Member',
-                status: p.status,
-              });
-            }
-          });
-        } catch (e) {
-          console.error('Failed to read registrations', e);
-        }
-      });
-
-      setMyPrograms(found);
+        setMyPrograms(found);
+      } catch (e) {
+        console.error('Failed to read registrations', e);
+      }
     };
 
     loadPrograms();
-    window.addEventListener('storage', loadPrograms);
     window.addEventListener('focus', loadPrograms);
+    const timer = setInterval(loadPrograms, 20000);
 
     return () => {
-      window.removeEventListener('storage', loadPrograms);
       window.removeEventListener('focus', loadPrograms);
+      clearInterval(timer);
     };
   }, [student]);
 
@@ -133,32 +135,31 @@ export default function StudentDashboard() {
    * TEST MODE (now): saves a "paid" record straight away. Nothing real is charged.
    *
    * STRIPE (later, once the backend exists):
-   *   1. POST to your backend, e.g. /api/payments/checkout, with only the student's id.
-   *      The backend looks up the department's fund amount itself; never send the amount from here.
+   *   1. POST to your backend, e.g. /api/payments/checkout, with only the student's id and the fest's id.
+   *      The backend looks up the department's fund amount for that fest itself; never send the amount from here.
    *   2. The backend creates a Stripe Checkout Session using the secret key and returns its url.
    *   3. window.location.href = session.url  (the student pays on Stripe's page)
    *   4. Stripe calls your backend webhook. ONLY the webhook saves the payment as "paid"
-   *      (provider: 'stripe', providerRef: the Stripe payment id).
+   *      (provider: 'stripe', providerRef: the Stripe payment id, festId: the fest paid for).
    *   5. On return to this page, loadFund() runs and shows Paid.
    * The rest of this page, the class teacher's list and the coordinator totals stay unchanged.
    */
-  const startPayment = async () => {
+  const startPayment = async (due) => {
     setPayMessage({ type: '', text: '' });
 
-    if (!deptFund?.amount) {
-      setPayMessage({ type: 'error', text: 'Your department has not set the fest fund amount yet.' });
-      return;
-    }
     if (!student?.classSection) {
       setPayMessage({ type: 'error', text: 'Your class is not set on your account. Please ask your department coordinator.' });
       return;
     }
 
-    setPayBusy(true);
+    setPayBusyId(due.fest.id);
     try {
-      // Check again so a double click can never create two payments
+      // Check again so a double click can never create two payments for the same fest
       const existing = await fetch(`${API_BASE}/payments?studentId=${student.id}`).then((r) => (r.ok ? r.json() : []));
-      if (Array.isArray(existing) && existing.some((p) => p.status === 'paid')) {
+      if (
+        Array.isArray(existing) &&
+        existing.some((p) => p.status === 'paid' && sameId(p.festId, due.fest.id))
+      ) {
         await loadFund();
         return;
       }
@@ -167,13 +168,15 @@ export default function StudentDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          festId: due.fest.id,
+          festName: due.fest.name,
           studentId: student.id,
           studentName: student.name,
           registerNo: student.registerNo || '',
           department: student.department,
           deptKey,
           classSection: student.classSection,
-          amount: Number(deptFund.amount),
+          amount: Number(due.fund.amount),
           currency: 'INR',
           status: 'paid',
           provider: 'test',
@@ -184,11 +187,11 @@ export default function StudentDashboard() {
       if (!res.ok) throw new Error('Could not save your payment. Please try again.');
 
       await loadFund();
-      setPayMessage({ type: 'ok', text: 'Payment recorded. Thank you!' });
+      setPayMessage({ type: 'ok', text: `Payment recorded for ${due.fest.name}. Thank you!` });
     } catch (err) {
       setPayMessage({ type: 'error', text: err.message || 'Payment failed. Please try again.' });
     } finally {
-      setPayBusy(false);
+      setPayBusyId(null);
     }
   };
 
@@ -276,51 +279,62 @@ export default function StudentDashboard() {
 
         <div className="space-y-6">
 
-          {/* SECTION 1: Fest fund payment */}
+          {/* SECTION 1: Fest fund payments (one card per fest) */}
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
-                  <IndianRupee size={24} />
-                </div>
-                <div>
-                  <h3 className="fest-display text-base font-bold text-[#0B3F46]">
-                    Fest fund due{deptFund ? `: ₹${deptFund.amount}` : ''}
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {student?.department
-                      ? `Set by the ${student.department} department. Every student pays once.`
-                      : 'Set by your department. Every student pays once.'}
-                  </p>
-                </div>
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                <IndianRupee size={24} />
               </div>
-
-              <div className="flex items-center gap-4">
-                {myPayment ? (
-                  <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
-                    <CheckCircle2 size={16} /> Paid ₹{myPayment.amount}
-                    {myPayment.paidAt ? ` · ${new Date(myPayment.paidAt).toLocaleDateString('en-IN')}` : ''}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={startPayment}
-                    disabled={payBusy || !deptFund}
-                    className="bg-[#0B3F46] hover:bg-[#0E4D55] text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {payBusy ? 'Processing...' : deptFund ? `Pay ₹${deptFund.amount}` : 'Pay Fund Now'}
-                  </button>
-                )}
+              <div>
+                <h3 className="fest-display text-base font-bold text-[#0B3F46]">Fest Fund</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {student?.department
+                    ? `Set by the ${student.department} department for each fest. Pay once per fest.`
+                    : 'Set by your department for each fest. Pay once per fest.'}
+                </p>
               </div>
             </div>
 
-            {!deptFund && !myPayment && (
+            {fundDues.length === 0 ? (
               <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
-                Your department coordinator has not set the fest fund amount yet. You can pay once it is set.
+                Your department coordinator has not set a fest fund amount yet. It will appear here once it is set.
               </p>
+            ) : (
+              <div className="space-y-3">
+                {fundDues.map((due) => (
+                  <div
+                    key={due.fest.id}
+                    className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <p className="font-bold text-sm text-[#0B3F46]">{due.fest.name}</p>
+                      <p className="text-xs text-slate-500">
+                        Fest fund due: <span className="font-mono font-bold text-[#0E4D55]">₹{due.fund.amount}</span>
+                        {due.fest.festDate ? ` · Fest on ${new Date(due.fest.festDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}
+                      </p>
+                    </div>
+
+                    {due.payment ? (
+                      <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
+                        <CheckCircle2 size={16} /> Paid ₹{due.payment.amount}
+                        {due.payment.paidAt ? ` · ${new Date(due.payment.paidAt).toLocaleDateString('en-IN')}` : ''}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startPayment(due)}
+                        disabled={payBusyId !== null}
+                        className="bg-[#0B3F46] hover:bg-[#0E4D55] text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {payBusyId !== null && sameId(payBusyId, due.fest.id) ? 'Processing...' : `Pay ₹${due.fund.amount}`}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
 
-            {!student?.classSection && student && !myPayment && (
+            {!student?.classSection && student && fundDues.some((d) => !d.payment) && (
               <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
                 Your class is not set on your account, so your class teacher cannot see your payment. Please ask your department coordinator.
               </p>
@@ -380,19 +394,19 @@ export default function StudentDashboard() {
                     <div>
                       <span className="font-bold text-slate-800 block text-sm">{prog.eventName}</span>
                       <span className="text-[11px] text-slate-500">
-                        {prog.eventType} Event · {prog.role}
+                        {prog.eventType} Event · {prog.role}{prog.festName ? ` · ${prog.festName}` : ''}
                       </span>
                     </div>
 
                     <span
                       className={`rounded-full px-3 py-1 font-semibold flex items-center gap-1 border ${
-                        prog.status === 'Submitted to Coordinator'
+                        prog.status !== 'Pending Submission'
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : 'bg-amber-50 text-amber-700 border-amber-200'
                       }`}
                     >
-                      {prog.status === 'Submitted to Coordinator' && <CheckCircle2 className="h-3.5 w-3.5" />}
-                      {prog.status === 'Submitted to Coordinator' ? 'Registered' : 'Pending Submission'}
+                      {prog.status !== 'Pending Submission' && <CheckCircle2 className="h-3.5 w-3.5" />}
+                      {prog.status !== 'Pending Submission' ? 'Registered' : 'Pending Submission'}
                     </span>
                   </div>
                 ))}
