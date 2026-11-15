@@ -16,6 +16,32 @@ import { API_BASE } from '../services/api';
 const inputStyle =
   'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-[#0B3F46] focus:ring-2 focus:ring-[#0B3F46]/10';
 
+// Compare register numbers while ignoring case, spaces and symbols
+const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Dates of birth are never stored as plain text. The class list keeps only this fingerprint
+// (a SHA-256 of register number + date). Register.jsx and CoordinatorDashboard.jsx must use the same code.
+const hashDob = async (regNo, dobIso) => {
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error('The date of birth check needs a secure page (https or localhost).');
+  }
+  const data = new TextEncoder().encode(`${String(regNo || '').toLowerCase().replace(/[^a-z0-9]/g, '')}|${dobIso}`);
+  const buf = await window.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+// Names match when every word of the shorter name is in the longer one, ignoring titles:
+// "Dr. Reshmi" matches "Reshmi K".
+const TITLES = new Set(['dr', 'prof', 'mr', 'mrs', 'ms', 'smt', 'sri', 'shri', 'mx']);
+const nameTokens = (v) => String(v || '').toLowerCase().split(/[^a-z]+/).filter((t) => t && !TITLES.has(t));
+const namesMatch = (a, b) => {
+  const x = nameTokens(a);
+  const y = nameTokens(b);
+  if (!x.length || !y.length) return false;
+  const [small, big] = x.length <= y.length ? [x, y] : [y, x];
+  return small.every((t) => big.includes(t));
+};
+
 export default function Register() {
   const navigate = useNavigate();
 
@@ -27,6 +53,7 @@ export default function Register() {
     identifier: '', // Staff ID for teachers, Register No for students/volunteers
     role: 'Teacher',
     password: '',
+    dob: '', // students: date of birth, checked against the class list
   });
 
   const [sections, setSections] = useState([]);
@@ -52,7 +79,7 @@ export default function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const { name, email, department, sectionId, identifier, role, password } = formData;
+    const { name, email, department, sectionId, identifier, role, password, dob } = formData;
     const section = sections.find((s) => String(s.id) === String(sectionId));
 
     if (!name.trim() || !email.trim() || !identifier.trim() || !password) {
@@ -61,6 +88,10 @@ export default function Register() {
     }
     if (isStudentRole && !section) {
       setError('Please choose your class. If none are listed, ask your department coordinator to add it.');
+      return;
+    }
+    if (role === 'Student' && !dob) {
+      setError('Please enter your date of birth. It is checked against your class list.');
       return;
     }
     if (!isStudentRole && !department.trim()) {
@@ -99,19 +130,111 @@ export default function Register() {
       // Teachers: class teacher, coordinator and program duties are NOT chosen here.
       // The admin appoints coordinators; coordinators assign class and program duties.
 
+      // Check duplicates, and approve automatically when the ID is on an uploaded list:
+      // students on the class list (coordinator), teachers on the staff list (admin).
+      const getList = (path) => fetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : []));
+      const [classLists, staffLists, allUsers] = await Promise.all([
+        getList('/classLists'),
+        getList('/staffLists'),
+        getList('/users'),
+      ]);
+      const existingUsers = Array.isArray(allUsers) ? allUsers : [];
+      const mine = norm(identifier);
+      const emailKey = email.trim().toLowerCase();
+
+      if (existingUsers.some((u) => !u.rejected && String(u.email || '').trim().toLowerCase() === emailKey)) {
+        throw new Error('An account with this email already exists. Please sign in instead.');
+      }
+
+      let autoApproved = false;
+      let listCheck = null;
+      let staffMatch = null;
+      let mergeTarget = null;
+
+      if (isStudentRole) {
+        if (existingUsers.some((u) => u.baseType === 'student' && !u.rejected && norm(u.registerNo) === mine)) {
+          throw new Error('An account with this register number already exists. Please sign in. If it is not yours, tell your class teacher so the wrong account can be removed.');
+        }
+        // Compare with the class list: register number, class, and date of birth
+        const entry = (Array.isArray(classLists) ? classLists : []).find((c) => norm(c.registerNo) === mine) || null;
+        if (!entry) {
+          listCheck = 'not_on_list';
+        } else if (entry.deptKey !== section.deptKey || entry.classSection !== section.name) {
+          listCheck = 'other_class';
+        } else if (entry.dobHash) {
+          try {
+            const h = dob ? await hashDob(identifier, dob) : null;
+            listCheck = h && h === entry.dobHash ? 'matched' : 'dob_mismatch';
+          } catch (err) {
+            listCheck = 'unchecked';
+          }
+        } else {
+          listCheck = 'matched_no_dob'; // the list has no date of birth for this student
+        }
+
+        // Only the Student role is auto-approved. Volunteers always wait for their class teacher.
+        autoApproved = role === 'Student' && (listCheck === 'matched' || listCheck === 'matched_no_dob');
+      } else {
+        if (existingUsers.some((u) => u.baseType === 'teacher' && !u.rejected && u.staffId && norm(u.staffId) === mine)) {
+          throw new Error('An account with this Staff ID already exists. Please sign in, or contact the admin.');
+        }
+        // Both the Staff ID and the name must match the staff list
+        staffMatch =
+          (Array.isArray(staffLists) ? staffLists : []).find(
+            (c) => norm(c.staffId) === mine && namesMatch(c.name, name)
+          ) || null;
+        autoApproved = !!staffMatch;
+
+        // If the admin already named this person as a coordinator, link the new account to that entry
+        if (autoApproved) {
+          mergeTarget =
+            existingUsers.find(
+              (u) =>
+                ((u.duties || []).includes('dept_coordinator') || u.role === 'dept_coordinator') &&
+                (!u.staffId || !u.email) &&
+                namesMatch(u.name, name)
+            ) || null;
+        }
+      }
+
+      if (mergeTarget) {
+        const mres = await fetch(`${API_BASE}/users/${mergeTarget.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            staffId: identifier.trim(),
+            email: email.trim(),
+            password,
+            approved: true,
+            approvalMethod: 'staff_list',
+            approvedAt: new Date().toISOString(),
+          }),
+        });
+        if (!mres.ok) throw new Error('Failed to register. Please check if the server is running.');
+        navigate('/login', {
+          state: {
+            notice: 'Registration successful. Your Staff ID is on the staff list and you are appointed as coordinator, so you can sign in now.',
+          },
+        });
+        return;
+      }
+
       const res = await fetch(`${API_BASE}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
           email: email.trim(),
-          department: isStudentRole ? section.department : department.trim(),
+          department: isStudentRole ? section.department : (staffMatch?.department || department.trim()),
           ...(isStudentRole ? { classSection: section.name } : {}),
           baseType,
           role: dbRole,
           duties,
           ...extraFields,
-          approved: false, // every role waits for approval
+          approved: autoApproved, // teachers wait for the admin; students are approved by the class list or their class teacher
+          ...(isStudentRole ? { listCheck } : {}),
+          approvalMethod: autoApproved ? (isStudentRole ? 'class_list' : 'staff_list') : 'pending',
+          ...(autoApproved ? { approvedAt: new Date().toISOString() } : {}),
           rejected: false,
           password,
           createdAt: new Date().toISOString(),
@@ -124,7 +247,13 @@ export default function Register() {
 
       navigate('/login', {
         state: {
-          notice: 'Registration submitted successfully. Please wait for approval before signing in.',
+          notice: autoApproved
+            ? isStudentRole
+              ? 'Registration successful. Your register number is on your class list, so you can sign in now.'
+              : 'Registration successful. Your Staff ID is on the staff list, so you can sign in now.'
+            : isStudentRole
+              ? 'Registration submitted. Your class teacher will approve it. Please sign in after that.'
+              : 'Registration submitted successfully. Please wait for approval before signing in.',
         },
       });
     } catch (err) {
@@ -242,6 +371,38 @@ export default function Register() {
               </div>
             </div>
           </div>
+
+          {formData.role === 'Student' && (
+            <p className="rounded-xl bg-[#E6F1F2] px-4 py-3 text-xs text-[#0B3F46]">
+              If your register number and date of birth match your class list, you are approved instantly. Otherwise your class teacher will approve you.
+            </p>
+          )}
+          {formData.role === 'Teacher' && (
+            <p className="rounded-xl bg-[#E6F1F2] px-4 py-3 text-xs text-[#0B3F46]">
+              If your Staff ID and name are on the staff list, you are approved instantly. Otherwise the admin will approve you.
+            </p>
+          )}
+          {formData.role === 'Volunteer' && (
+            <p className="rounded-xl bg-[#E6F1F2] px-4 py-3 text-xs text-[#0B3F46]">
+              Volunteer registrations are approved by your class teacher.
+            </p>
+          )}
+
+          {isStudentRole && (
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                Date of Birth{formData.role === 'Volunteer' ? ' (optional)' : ''}
+              </label>
+              <input
+                type="date"
+                name="dob"
+                max={new Date().toISOString().slice(0, 10)}
+                value={formData.dob}
+                onChange={handleChange}
+                className={inputStyle}
+              />
+            </div>
+          )}
 
           <div>
             <label className="mb-1.5 block text-xs font-semibold text-slate-600">Password</label>

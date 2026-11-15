@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Trophy, Radio, ArrowRight } from 'lucide-react';
+import TypingText from '../components/TypingText';
+import SwarmCursor from '../components/SwarmCursor';
+import ElectricLogo from '../components/ElectricLogo';
 
 /*
  * LandingPage (design only)
@@ -14,6 +17,14 @@ const FONT_CSS = `
 .fest-display { font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif; }
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
+
+// Lines typed in the hero heading. The first one is also the plain-text heading for screen readers.
+// Keep each line to about 36 characters so it fits on three lines or fewer.
+const HERO_LINES = [
+  'Run your whole fest from one screen.',
+  'Entries, funds and results, sorted.',
+  'Follow every stage, live.',
+];
 
 const QUEUE = [
   { no: 104, who: 'Anu Krishnan' },
@@ -96,12 +107,19 @@ export default function LandingPage() {
       <style>{FONT_CSS}</style>
 
       {/* Hero */}
-      <div className="relative overflow-hidden bg-[#0B3F46] text-white">
+      <SwarmCursor
+        className="overflow-hidden bg-[#0B3F46] text-white"
+        count={800}
+        size={2.6}
+        spread={90}
+        swirl={0.6}
+        clickEffect="burst"
+      >
         <div aria-hidden="true" className="pointer-events-none absolute -right-28 -top-32 h-96 w-96 rounded-full bg-[#D6336C]" />
         <div aria-hidden="true" className="pointer-events-none absolute -right-12 -top-16 h-64 w-64 rounded-full border-[22px] border-[#F5A623]" />
         <div aria-hidden="true" className="pointer-events-none absolute -bottom-48 -left-32 h-[28rem] w-[28rem] rounded-full border-[48px] border-[#F5A623]/20" />
 
-        <header className="relative mx-auto flex max-w-7xl items-center justify-between px-6 py-6">
+        <header className="relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6">
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#F5A623] text-[#2A1A00]">
               <Trophy className="h-5 w-5" aria-hidden="true" />
@@ -125,10 +143,14 @@ export default function LandingPage() {
           </nav>
         </header>
 
-        <div className="relative mx-auto grid max-w-7xl items-center gap-12 px-6 pb-20 pt-10 lg:grid-cols-[1.1fr_1fr] lg:pb-28 lg:pt-16">
+        <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-12 px-6 pb-20 pt-10 lg:grid-cols-[1.1fr_1fr] lg:pb-28 lg:pt-16">
           <div className="max-w-xl">
-            <h1 className="fest-display text-4xl font-extrabold leading-[1.05] tracking-tight sm:text-5xl lg:text-6xl">
-              Run your whole fest from one screen.
+            {/* min-h keeps the page from jumping while the text types and deletes */}
+            <h1 className="fest-display min-h-[3.3em] text-4xl font-extrabold leading-[1.05] tracking-tight sm:text-5xl lg:text-6xl">
+              <span className="sr-only">{HERO_LINES[0]}</span>
+              <span aria-hidden="true">
+                <TypingText text={HERO_LINES} typingSpeed={75} deletingSpeed={50} pauseDuration={1500} cursorCharacter="_" />
+              </span>
             </h1>
             <p className="mt-5 max-w-md text-base leading-relaxed text-white/75">
               CampusFest takes school and college arts fests, sports meets and youth festivals online: entries, funds, venues, live stage status and results.
@@ -154,7 +176,7 @@ export default function LandingPage() {
             <StatusBoard />
           </div>
         </div>
-      </div>
+      </SwarmCursor>
 
       {/* How a fest runs: a real sequence, so the steps are numbered */}
       <section className="mx-auto max-w-7xl px-6 py-20">
@@ -222,17 +244,39 @@ export default function LandingPage() {
 
       {/* Closing call to action */}
       <section className="bg-[#0B3F46] text-white">
-        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-6 px-6 py-14 sm:flex-row sm:items-center">
-          <h2 className="fest-display max-w-md text-2xl font-extrabold tracking-tight sm:text-3xl">
-            Ready for this year&rsquo;s fest?
-          </h2>
-          <Link
-            to="/login"
-            className="inline-flex items-center gap-2 rounded-xl bg-[#F5A623] px-7 py-3.5 text-sm font-semibold text-[#2A1A00] transition hover:bg-[#FFB83D] focus:outline-none focus:ring-4 focus:ring-white/40"
-          >
-            Sign in
-            <ArrowRight className="h-4 w-4" aria-hidden="true" />
-          </Link>
+        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-14 sm:flex-row sm:items-center">
+          <div>
+            <h2 className="fest-display max-w-md text-2xl font-extrabold tracking-tight sm:text-3xl">
+              Ready for this year&rsquo;s fest?
+            </h2>
+            <Link
+              to="/login"
+              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#F5A623] px-7 py-3.5 text-sm font-semibold text-[#2A1A00] transition hover:bg-[#FFB83D] focus:outline-none focus:ring-4 focus:ring-white/40"
+            >
+              Sign in
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </Link>
+          </div>
+          <div aria-hidden="true" className="relative h-56 w-full sm:w-80">
+            <ElectricLogo
+              src="/logo.svg"
+              color="#FFE3A8"
+              glowColor="#F5A623"
+              scale={0.7}
+              strands={4}
+              bend={0.6}
+              crackle={1.5}
+              speed={2.5}
+              interactive
+              intensity={1}
+              glow={1}
+              thickness={1.5}
+              flicker={0.6}
+              fill={0}
+              cursorIntensity={0.75}
+              cursorRadius={100}
+            />
+          </div>
         </div>
       </section>
 
