@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import { Trophy, Radio, ArrowRight } from 'lucide-react';
 import TypingText from '../components/TypingText';
 import SwarmCursor from '../components/SwarmCursor';
-import ElectricLogo from '../components/ElectricLogo';
 
 /*
  * LandingPage (design only)
