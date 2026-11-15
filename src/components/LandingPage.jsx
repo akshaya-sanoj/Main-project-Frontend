@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Trophy, Radio, ArrowRight } from 'lucide-react';
-import TypingText from '../components/TypingText';
-import SwarmCursor from '../components/SwarmCursor';
+import TypingText from './TypingText';
+import SwarmCursor from './Swarmcursor';
 
 /*
  * LandingPage (design only)
