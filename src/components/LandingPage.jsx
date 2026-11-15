@@ -256,26 +256,7 @@ export default function LandingPage() {
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </Link>
           </div>
-          <div aria-hidden="true" className="relative h-56 w-full sm:w-80">
-            <ElectricLogo
-              src="/logo.svg"
-              color="#FFE3A8"
-              glowColor="#F5A623"
-              scale={0.7}
-              strands={4}
-              bend={0.6}
-              crackle={1.5}
-              speed={2.5}
-              interactive
-              intensity={1}
-              glow={1}
-              thickness={1.5}
-              flicker={0.6}
-              fill={0}
-              cursorIntensity={0.75}
-              cursorRadius={100}
-            />
-          </div>
+          
         </div>
       </section>
 
