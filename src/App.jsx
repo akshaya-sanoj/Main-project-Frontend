@@ -19,6 +19,7 @@ import VenueDashboard from './venue/pages/VenueDashboard';
 import FoodDashboard from './food/pages/FoodDashboard';
 import GrievanceDashboard from './grievance/pages/GrievanceDashboard';
 import PublicLiveBoard from './public_portal/pages/PublicLiveBoard';
+import JudgeResults from './admin/pages/JudgeResults';
 
 export default function App() {
   return (
@@ -41,12 +42,11 @@ export default function App() {
           <Route path="/student/:id" element={<StudentDashboard />} />
 
           {/* Feature Dashboards */}
-          <Route path="/judge" element={<JudgeDashboard />} />
-          <Route path="/volunteer-dashboard/:id?" element={<VolunteerDashboard />} />
+<Route path="/judge/:id?" element={<JudgeDashboard />} />          <Route path="/volunteer-dashboard/:id?" element={<VolunteerDashboard />} />
           <Route path="/venue" element={<VenueDashboard />} />
           <Route path="/food" element={<FoodDashboard />} />
           <Route path="/grievance" element={<GrievanceDashboard />} />
-
+<Route path="/admin/results" element={<JudgeResults />} />
           {/* Fallback Route */}
           <Route path="*" element={<LoginPage />} />
         </Routes>

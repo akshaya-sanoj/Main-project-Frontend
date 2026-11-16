@@ -10,8 +10,8 @@ import AdminLayout from '../../admin/components/Adminlayout';
 
 /*
  * AdminDashboard (fest committee)
- * Works with json-server on port 3000. db.json needs these lists: users, fests, programs
- * (add "programs": [] if it is missing, then restart the server).
+ * Works with json-server on port 3000. db.json needs these lists: users, fests, programs, results
+ * (add "programs": [] and "results": [] if missing, then restart the server).
  * Fests and programs are saved on the server, not in this browser, so coordinators on other
  * computers can see them. A coordinator is a user with the dept_coordinator duty, so appointing
  * one updates that person's account and their login picks it up.
@@ -33,6 +33,9 @@ const GENDERS = ['Open', 'Boys', 'Girls', 'Mixed'];
 const TECH_TYPES = ['Coding', 'Quiz', 'Hackathon', 'Robotics', 'Paper presentation', 'Project exhibition', 'Design / Web', 'Gaming', 'Other'];
 const TECH_MODES = ['Offline', 'Online'];
 
+// Points each rank earns for its department. Change these numbers to change the leaderboard.
+const RANK_POINTS = { '1st Place': 5, '2nd Place': 3, '3rd Place': 1 };
+
 async function request(path, options = {}) {
   let res;
   try {
@@ -43,7 +46,7 @@ async function request(path, options = {}) {
   if (!res.ok) {
     const isList = path.split('/').filter(Boolean).length === 1;
     if (res.status === 404 && isList) {
-      throw new Error('The server has no list for this yet. Check that db.json has \"fests\", \"programs\", \"sections\", \"deptFunds\", \"payments\" and \"registrations\", then restart it.');
+      throw new Error('The server has no list for this yet. Check that db.json has "fests", "programs", "sections", "deptFunds", "payments" and "registrations", then restart it.');
     }
     throw new Error(res.status === 404 ? 'That item was not found. It may already have been removed.' : 'The server could not save that. Please try again.');
   }
@@ -215,20 +218,23 @@ export default function AdminDashboard() {
   const [registrations, setRegistrations] = useState([]);
   const [staffLists, setStaffLists] = useState([]);
   const [staffText, setStaffText] = useState('');
+  const [results, setResults] = useState([]); // marks the judges have saved
 
   const loadAll = useCallback(async () => {
-    const [u, f, p, regs, staff] = await Promise.all([
+    const [u, f, p, regs, staff, res] = await Promise.all([
       request('/users'),
       request('/fests'),
       request('/programs'),
       request('/registrations').catch(() => []),
       request('/staffLists').catch(() => []),
+      request('/results').catch(() => []),
     ]);
     setUsers(u);
     setFests(f);
     setPrograms(p);
     setRegistrations(Array.isArray(regs) ? regs : []);
     setStaffLists(Array.isArray(staff) ? staff : []);
+    setResults(Array.isArray(res) ? res : []);
   }, []);
 
   useEffect(() => {
@@ -305,6 +311,29 @@ export default function AdminDashboard() {
   // The Department Submissions tab groups them by fest; the count here feeds the sidebar badge.
   const forwardedRegs = registrations.filter((r) => r.status === 'Forwarded to Admin');
   const submissionCount = new Set(forwardedRegs.map((r) => `${r.festId}|${r.deptKey}`)).size;
+
+  // Department points from the marks judges have submitted.
+  // Drafts do not count. If a student has more than one submitted row, the latest one is used.
+  const deptTotals = (() => {
+    const latest = new Map();
+    results
+      .filter((x) => x.status === 'submitted')
+      .forEach((x) => {
+        const old = latest.get(x.registrationId);
+        if (!old || String(x.submittedAt) > String(old.submittedAt)) latest.set(x.registrationId, x);
+      });
+    const totals = new Map();
+    latest.forEach((x) => {
+      const key = x.deptKey || String(x.department || '').replace(/"/g, '');
+      const t = totals.get(key) || {
+        name: String(x.department || x.deptKey || 'Unknown').replace(/"/g, ''),
+        points: 0,
+      };
+      t.points += RANK_POINTS[x.rank] || 0;
+      totals.set(key, t);
+    });
+    return [...totals.values()].sort((a, b) => b.points - a.points);
+  })();
 
   // Coordinators from before fests were tracked: not linked to any fest yet
   const unlinkedCoordinators = coordinatorUsers.filter((u) => !Array.isArray(u.festIds) || u.festIds.length === 0);
@@ -1532,17 +1561,27 @@ export default function AdminDashboard() {
               <h3 className="fest-display mb-1 flex items-center gap-2 font-bold text-[#0B3F46]">
                 <Trophy className="h-5 w-5 text-[#F5A623]" /> Leaderboard and Results
               </h3>
-              <p className="mb-4 text-xs text-slate-500">Sample data. Final standings come from the judges&rsquo; verified scores.</p>
+              <p className="mb-4 text-xs text-slate-500">
+                From the marks judges have submitted. 1st = {RANK_POINTS['1st Place']}, 2nd = {RANK_POINTS['2nd Place']}, 3rd = {RANK_POINTS['3rd Place']} points.
+              </p>
               <div className="space-y-3 text-xs">
-                <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 p-3">
-                  <span className="font-bold text-amber-900">1st: Department of Computer Science</span>
-                  <span className="font-bold text-amber-800">145 points</span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <span className="font-semibold text-slate-700">2nd: Department of ECE</span>
-                  <span className="font-bold text-slate-700">120 points</span>
-                </div>
+                {deptTotals.length === 0 ? (
+                  <p className="text-slate-500">No judge results yet. They appear here when a judge submits a program.</p>
+                ) : (
+                  deptTotals.map((d, i) => (
+                    <div
+                      key={d.name}
+                      className={`flex items-center justify-between rounded-xl border p-3 ${i === 0 ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}
+                    >
+                      <span className={`font-semibold ${i === 0 ? 'text-amber-900' : 'text-slate-700'}`}>{i + 1}. {d.name}</span>
+                      <span className="font-bold text-[#0B3F46]">{d.points} points</span>
+                    </div>
+                  ))
+                )}
               </div>
+              <Link to="/admin/results" className="mt-4 inline-block text-xs font-bold text-[#0B3F46] hover:underline">
+                See every mark
+              </Link>
             </section>
           </div>
         </div>

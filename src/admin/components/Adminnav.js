@@ -20,5 +20,4 @@ export const ADMIN_NAV_ITEMS = [
   { id: 'staff', label: 'Staff List', icon: ClipboardCheck },
   { id: 'approvals', label: 'Pending Approvals', icon: UserCheck, badgeKey: 'approvals' },
   { id: 'submissions', label: 'Department Submissions', icon: Send, badgeKey: 'submissions' },
-  { id: 'funds', label: 'Funds, Participation & Leaderboards', icon: DollarSign },
-];
+{ id: 'overview', label: 'Funds, Participation & Leaderboards', icon: DollarSign },];

@@ -24,9 +24,9 @@ async function request(path, options = {}) {
   if (!res.ok) {
     const isList = path.split('/').filter(Boolean).length === 1;
     if (res.status === 404 && isList) {
-      throw new Error('The server has no list for this yet.');
+      throw new Error('The server has no list for this yet. Check that db.json has "fests", "programs", "sections", "deptFunds", "payments", "registrations", "classLists" and "staffLists", then restart it.');
     }
-    throw new Error(res.status === 404 ? 'That item was not found.' : 'The server could not save that.');
+    throw new Error(res.status === 404 ? 'That item was not found. It may have been removed.' : 'The server could not save that. Please try again.');
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -78,10 +78,12 @@ export default function CoordinatorDashboard() {
   const [fundInput, setFundInput] = useState('');
   const [sectionInput, setSectionInput] = useState('');
   const [staffLists, setStaffLists] = useState([]);
+  const [classLists, setClassLists] = useState([]);
 
   const loadAll = useCallback(async () => {
+    // The lists below are optional so the page still opens if they are not in db.json yet
     const optional = (path) => request(path).catch(() => []);
-    const [u, f, p, sec, df, pay, regs, staff] = await Promise.all([
+    const [u, f, p, sec, df, pay, regs, staff, lists] = await Promise.all([
       request('/users'),
       request('/fests'),
       request('/programs'),
@@ -90,6 +92,7 @@ export default function CoordinatorDashboard() {
       optional('/payments'),
       optional('/registrations'),
       optional('/staffLists'),
+      optional('/classLists'),
     ]);
     setUsers(Array.isArray(u) ? u : []);
     setFests(Array.isArray(f) ? f : []);
@@ -99,12 +102,14 @@ export default function CoordinatorDashboard() {
     setPayments(Array.isArray(pay) ? pay : []);
     setRegistrations(Array.isArray(regs) ? regs : []);
     setStaffLists(Array.isArray(staff) ? staff : []);
+    setClassLists(Array.isArray(lists) ? lists : []);
   }, []);
 
   useEffect(() => {
     loadAll().then(() => setLoadError('')).catch((e) => setLoadError(e.message));
   }, [loadAll]);
 
+  // Keep the page fresh: reload when the window regains focus and every 15 seconds
   useEffect(() => {
     const refresh = () => { loadAll().catch(() => {}); };
     window.addEventListener('focus', refresh);
@@ -115,6 +120,7 @@ export default function CoordinatorDashboard() {
     };
   }, [loadAll]);
 
+  // Runs a save, reloads the data, and shows either a notice or the error
   const run = async (fn, successMessage) => {
     setBusy(true);
     setTeacherError('');
@@ -132,10 +138,17 @@ export default function CoordinatorDashboard() {
     }
   };
 
+  const fail = (message) => {
+    setTeacherError(message);
+    setTeacherNotice('');
+  };
+
   const deptTeachers = users.filter(
     (u) => u.baseType === 'teacher' && u.approved !== false && !u.rejected && (u.staffId || u.email) && normalizeDept(u.department || '') === deptKey
   );
 
+  // The fests this coordinator was appointed to by the admin.
+  // Older coordinators without a festIds list still see every fest until the admin links them.
   const myFestIds = Array.isArray(coordinator?.festIds) && coordinator.festIds.length > 0 ? coordinator.festIds : null;
   const myFests = fests.filter((f) => !myFestIds || myFestIds.some((id) => sameId(id, f.id)));
   const myFestKey = myFests.map((f) => f.id).join(',');
@@ -144,69 +157,125 @@ export default function CoordinatorDashboard() {
     if (myFests.length > 0 && !myFests.some((f) => sameId(f.id, selectedFestId))) {
       setSelectedFestId(String(myFests[myFests.length - 1].id));
     }
-  }, [myFestKey, selectedFestId, myFests]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myFestKey, selectedFestId]);
 
   const selectedFest = myFests.find((f) => sameId(f.id, selectedFestId)) || null;
   const publishedPrograms = selectedFest && selectedFest.published ? programs.filter((p) => sameId(p.festId, selectedFest.id)) : [];
   const programsOfTeacher = (teacherId) => publishedPrograms.filter((p) => ((p.assignments || {})[deptKey] || []).some((id) => sameId(id, teacherId)));
   const isClassTeacher = (u) => (u.duties || []).includes('class_teacher') && !!u.classSection;
 
+  // ---------- Classes and students of this department ----------
+  const deptSections = sections.filter((s) => s.deptKey === deptKey);
+  const allDeptStudents = users.filter((u) => u.baseType === 'student' && !u.rejected && normalizeDept(u.department || '') === deptKey);
+  const deptStudents = allDeptStudents.filter((u) => u.approved !== false);
+  const classTeacherOfSection = (name) => deptTeachers.find((t) => isClassTeacher(t) && t.classSection === name);
+  const takenSections = deptTeachers.filter(isClassTeacher).map((t) => t.classSection);
+  const freeSections = deptSections.filter((sec) => !takenSections.includes(sec.name));
+
+  // ---------- Class teachers ----------
   const handleSetClassTeacher = async (teacher) => {
     const section = (classInputs[teacher.id] || '').trim();
     if (section.length < 2) {
-      setTeacherError('Choose a class first.');
+      fail('Choose a class first. Add classes on the Classes & Fund tab.');
+      return;
+    }
+    const clash = deptTeachers.find(
+      (t) => !sameId(t.id, teacher.id) && isClassTeacher(t) && t.classSection.trim().toLowerCase() === section.toLowerCase()
+    );
+    if (clash) {
+      fail(`${clash.name} is already the class teacher of ${section}.`);
       return;
     }
     const duties = Array.from(new Set([...(teacher.duties || ['teacher']), 'class_teacher']));
-    const ok = await run(() => request(`/users/${teacher.id}`, send('PATCH', { duties, classSection: section })), `${teacher.name} is now class teacher.`);
+    const ok = await run(
+      () => request(`/users/${teacher.id}`, send('PATCH', { duties, classSection: section })),
+      `${teacher.name} is now the class teacher of ${section}.`
+    );
     if (ok) setClassInputs((prev) => ({ ...prev, [teacher.id]: '' }));
   };
 
   const handleRemoveClassTeacher = async (teacher) => {
-    if (!window.confirm(`Remove ${teacher.name}?`)) return;
+    if (!window.confirm(`Remove ${teacher.name} as class teacher of ${teacher.classSection}?`)) return;
     const duties = (teacher.duties || []).filter((d) => d !== 'class_teacher');
-    await run(() => request(`/users/${teacher.id}`, send('PATCH', { duties, classSection: null })), `${teacher.name} removed.`);
+    await run(
+      () => request(`/users/${teacher.id}`, send('PATCH', {
+        duties,
+        classSection: null,
+        role: teacher.role === 'class_teacher' ? 'teacher' : teacher.role,
+      })),
+      `${teacher.name} is no longer a class teacher.`
+    );
   };
 
+  // ---------- Program duties ----------
   const handleAssignProgram = async (teacher) => {
     const programId = programPick[teacher.id];
-    if (!programId) return;
+    if (!programId) {
+      fail('Choose a program first.');
+      return;
+    }
     const prog = programs.find((p) => sameId(p.id, programId));
     if (!prog) return;
     const list = (prog.assignments || {})[deptKey] || [];
-    const ok = await run(() => request(`/programs/${prog.id}`, send('PATCH', { assignments: { ...(prog.assignments || {}), [deptKey]: [...list, teacher.id] } })), `Assigned.`);
+    if (list.some((id) => sameId(id, teacher.id))) {
+      fail(`${teacher.name} is already assigned to ${prog.name}.`);
+      return;
+    }
+    const ok = await run(
+      () => request(`/programs/${prog.id}`, send('PATCH', { assignments: { ...(prog.assignments || {}), [deptKey]: [...list, teacher.id] } })),
+      `${teacher.name} assigned to ${prog.name}.`
+    );
     if (ok) setProgramPick((prev) => ({ ...prev, [teacher.id]: '' }));
   };
 
   const handleUnassignProgram = async (teacher, prog) => {
     const list = ((prog.assignments || {})[deptKey] || []).filter((id) => !sameId(id, teacher.id));
-    await run(() => request(`/programs/${prog.id}`, send('PATCH', { assignments: { ...(prog.assignments || {}), [deptKey]: list } })), `Removed.`);
+    await run(
+      () => request(`/programs/${prog.id}`, send('PATCH', { assignments: { ...(prog.assignments || {}), [deptKey]: list } })),
+      `${teacher.name} removed from ${prog.name}.`
+    );
   };
 
-  const deptRegistrations = registrations.filter((r) => r.deptKey === deptKey && selectedFest && sameId(r.festId, selectedFest.id) && r.status !== 'Pending Submission');
-  const teacherSubmissions = Object.values(deptRegistrations.reduce((acc, r) => {
-    const key = String(r.teacherId);
-    if (!acc[key]) acc[key] = { teacherName: r.teacherName, submittedAt: r.submittedAt, participants: [] };
-    acc[key].participants.push(r);
-    return acc;
-  }, {}));
+  // ---------- Participant rosters ----------
+  const deptRegistrations = registrations.filter(
+    (r) => r.deptKey === deptKey && selectedFest && sameId(r.festId, selectedFest.id) && r.status !== 'Pending Submission'
+  );
+  const teacherSubmissions = Object.values(
+    deptRegistrations.reduce((acc, r) => {
+      const key = String(r.teacherId);
+      if (!acc[key]) acc[key] = { teacherName: r.teacherName, submittedAt: r.submittedAt, participants: [] };
+      acc[key].participants.push(r);
+      if (String(r.submittedAt || '') > String(acc[key].submittedAt || '')) acc[key].submittedAt = r.submittedAt;
+      return acc;
+    }, {})
+  );
 
   const toForward = deptRegistrations.filter((r) => r.status === 'Submitted to Coordinator');
   const forwardedCount = deptRegistrations.length - toForward.length;
 
   const handleForwardToAdmin = async () => {
-    if (toForward.length === 0) return;
+    if (toForward.length === 0) {
+      fail('There are no new entries to forward.');
+      return;
+    }
     const now = new Date().toISOString();
-    await run(() => Promise.all(toForward.map((r) => request(`/registrations/${r.id}`, send('PATCH', { status: 'Forwarded to Admin', forwardedAt: now })))), `Forwarded entries.`);
+    await run(
+      () => Promise.all(toForward.map((r) => request(`/registrations/${r.id}`, send('PATCH', {
+        status: 'Forwarded to Admin',
+        forwardedAt: now,
+        forwardedBy: coordinator?.name || 'Coordinator',
+        forwardedById: coordinator?.id ?? null,
+      })))),
+      `Forwarded ${toForward.length} ${toForward.length === 1 ? 'entry' : 'entries'} from ${dept} to the Super Admin.`
+    );
   };
 
+  // ---------- Fest fund (per fest) ----------
   const deptFund = (selectedFest && deptFunds.find((f) => f.deptKey === deptKey && sameId(f.festId, selectedFest.id))) || null;
-  const deptSections = sections.filter((s) => s.deptKey === deptKey);
-  const allDeptStudents = users.filter((u) => u.baseType === 'student' && !u.rejected && normalizeDept(u.department || '') === deptKey);
-  const deptStudents = allDeptStudents.filter((u) => u.approved !== false);
 
-  const paidPaymentOf = (studentId) => payments.find((p) => sameId(p.studentId, studentId) && p.status === 'paid' && selectedFest && sameId(p.festId, selectedFest.id));
-  const classTeacherOfSection = (name) => deptTeachers.find((t) => isClassTeacher(t) && t.classSection === name);
+  const paidPaymentOf = (studentId) =>
+    payments.find((p) => sameId(p.studentId, studentId) && p.status === 'paid' && selectedFest && sameId(p.festId, selectedFest.id));
 
   const sectionStats = (sec) => {
     const students = deptStudents.filter((u) => u.classSection === sec.name);
@@ -216,31 +285,54 @@ export default function CoordinatorDashboard() {
   };
 
   const totalCollected = deptSections.reduce((sum, sec) => sum + sectionStats(sec).collected, 0);
-  const takenSections = deptTeachers.filter(isClassTeacher).map((t) => t.classSection);
-  const freeSections = deptSections.filter((sec) => !takenSections.includes(sec.name));
 
   const handleSaveFund = async (e) => {
     e.preventDefault();
+    if (!selectedFest) {
+      fail('Choose a fest first.');
+      return;
+    }
     const amount = Number(fundInput);
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      fail('Enter a fund amount greater than 0.');
+      return;
+    }
     const body = { festId: selectedFest.id, deptKey, department: dept, amount, updatedAt: new Date().toISOString() };
-    const ok = await run(() => deptFund ? request(`/deptFunds/${deptFund.id}`, send('PATCH', body)) : request('/deptFunds', send('POST', body)), `Fund saved.`);
+    const ok = await run(
+      () => (deptFund ? request(`/deptFunds/${deptFund.id}`, send('PATCH', body)) : request('/deptFunds', send('POST', body))),
+      `Fest fund for ${dept} in ${selectedFest.name} set to ₹${amount}.`
+    );
     if (ok) setFundInput('');
   };
 
   const handleAddSection = async (e) => {
     e.preventDefault();
     const name = sectionInput.trim();
-    if (name.length < 2) return;
-    const ok = await run(() => request('/sections', send('POST', { deptKey, department: dept, name })), `Class added.`);
+    if (name.length < 2) {
+      fail('Enter a class name, for example "S6 CSE - A".');
+      return;
+    }
+    if (deptSections.some((sec) => sec.name.toLowerCase() === name.toLowerCase())) {
+      fail('This class already exists.');
+      return;
+    }
+    const ok = await run(
+      () => request('/sections', send('POST', { deptKey, department: dept, name })),
+      `Class "${name}" added. Students can now choose it when they register.`
+    );
     if (ok) setSectionInput('');
   };
 
   const handleDeleteSection = async (sec) => {
+    if (allDeptStudents.some((u) => u.classSection === sec.name) || classTeacherOfSection(sec.name)) {
+      fail('This class has students or a class teacher, so it cannot be deleted.');
+      return;
+    }
     if (!window.confirm(`Delete class "${sec.name}"?`)) return;
     await run(() => request(`/sections/${sec.id}`, { method: 'DELETE' }), 'Class deleted.');
   };
 
+  // ---------- Volunteers (kept in this browser) ----------
   const volunteersKey = `coord_volunteers_${deptKey}`;
   const [volunteers, setVolunteers] = useDepartmentStorage(volunteersKey, [{ id: 201, name: 'Ananya S.', role: 'Stage Assistance', classSection: `3rd Year ${dept}` }]);
   const [volName, setVolName] = useState('');
@@ -256,10 +348,9 @@ export default function CoordinatorDashboard() {
 
   const handleDeleteVolunteer = (id) => setVolunteers((prev) => prev.filter((v) => v.id !== id));
 
-  // Calculate pending student approvals count for the sidebar badge
-  const pendingApprovalsCount = users.filter(
-    (u) => u.baseType === 'student' && u.approved === false && u.department === dept
-  ).length;
+  // Students of this department waiting for approval, for the sidebar badge.
+  // Uses the same department matching as everything else (not an exact text comparison).
+  const pendingApprovalsCount = allDeptStudents.filter((u) => u.approved === false).length;
 
   const badges = {
     approvals: pendingApprovalsCount,
@@ -267,13 +358,17 @@ export default function CoordinatorDashboard() {
 
   const cardStyle = 'rounded-2xl border border-slate-200 bg-white shadow-sm';
   const inputStyle = 'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-[#0B3F46] focus:ring-2 focus:ring-[#0B3F46]/10';
-  const primaryButton = 'flex items-center justify-center gap-2 rounded-xl bg-[#0B3F46] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#0E4D55]';
-  const smallButton = 'flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#0B3F46] px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-[#0E4D55]';
+  const primaryButton = 'flex items-center justify-center gap-2 rounded-xl bg-[#0B3F46] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#0E4D55] disabled:cursor-not-allowed disabled:opacity-50';
+  const smallButton = 'flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#0B3F46] px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-[#0E4D55] disabled:cursor-not-allowed disabled:opacity-50';
 
   return (
     <Coordinatorlayout
       activeTab={activeTab}
-      onSelect={setActiveTab}
+      onSelect={(id) => {
+        setActiveTab(id);
+        setTeacherError('');
+        setTeacherNotice('');
+      }}
       badges={badges}
       coordinator={coordinator}
       dept={dept}
@@ -326,15 +421,18 @@ export default function CoordinatorDashboard() {
       {activeTab === 'classLists' && (
         <ClassListsTab
           teacherNotice={teacherNotice} teacherError={teacherError} loadError={loadError}
-          deptSections={deptSections} staffLists={staffLists} run={run} request={request}
-          dept={dept} cardStyle={cardStyle} inputStyle={inputStyle} smallButton={smallButton}
+          deptSections={deptSections} classLists={classLists} users={users}
+          run={run} request={request} busy={busy} dept={dept}
+          coordinatorName={coordinator?.name || 'Coordinator'}
+          cardStyle={cardStyle} inputStyle={inputStyle} primaryButton={primaryButton}
         />
       )}
 
       {activeTab === 'approvals' && (
         <StudentApprovalsTab
           teacherNotice={teacherNotice} teacherError={teacherError} loadError={loadError}
-          users={users} run={run} request={request} dept={dept} cardStyle={cardStyle}
+          users={users} run={run} request={request} busy={busy} dept={dept}
+          coordinatorName={coordinator?.name || 'Coordinator'} cardStyle={cardStyle}
         />
       )}
 

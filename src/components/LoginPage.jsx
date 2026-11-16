@@ -9,6 +9,7 @@ const ROLE_ROUTES = {
   teacher: '/teacher', // every teacher lands here; the dashboard shows tabs based on duties
   student: '/student',
   volunteer: '/volunteer-dashboard',
+  judge: '/judge',
 };
 
 export default function LoginPage() {
