@@ -23,9 +23,9 @@ const FONT_CSS = `
 
 const IMAGES = {
   hero: { src: '/banner.png', alt: '' }, // decorative background
-  school: { src: '/school-fest.jpg', alt: 'Students performing at a school fest' },
-  college: { src: '/college-fest.jpg', alt: 'Students celebrating at a college fest' },
-  cta: { src: '/cta.jpg', alt: 'Crowd cheering at a fest stage' },
+  school: { src: '/10.png', alt: 'Students performing at a school fest' },
+  college: { src: '/12.png', alt: 'Students celebrating at a college fest' },
+  cta: { src: '/11.png', alt: 'Crowd cheering at a fest stage' },
   gallery: [
     { src: '/1.png', alt: 'Dance performance on the main stage' },
     { src: '/7.jpg', alt: 'Students singing in a group' },
