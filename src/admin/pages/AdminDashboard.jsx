@@ -4,24 +4,14 @@ import {
   Trophy, Plus, Users, Calendar, DollarSign, Award, Trash2, ShieldAlert,
   UserCheck, ClipboardList, Send, Pencil,
 } from 'lucide-react';
-import { API_BASE } from '../../services/api';
 import SubmissionsFestCards from './SubmissionsFestCards';
 import AdminLayout from '../../admin/components/Adminlayout';
-
-/*
- * AdminDashboard (fest committee)
- * Works with json-server on port 3000. db.json needs these lists: users, fests, programs, results
- * (add "programs": [] and "results": [] if missing, then restart the server).
- * Fests and programs are saved on the server, not in this browser, so coordinators on other
- * computers can see them. A coordinator is a user with the dept_coordinator duty, so appointing
- * one updates that person's account and their login picks it up.
- *
- * The sidebar and page frame come from ../components/AdminLayout.
- */
+import Photo from '../../components/Photo';
+import { confirmAction } from '../../utils/alert';
+import { API_BASE, authHeaders } from '../../services/api';
 
 const LANGUAGES = ['Malayalam', 'English', 'Hindi', 'Arabic', 'Urdu', 'Sanskrit', 'Tamil'];
 
-// Program categories: each one asks for the details that make sense for it
 const PROGRAM_CATEGORIES = [
   { id: 'cultural', label: 'Cultural / Arts' },
   { id: 'literary', label: 'Literary' },
@@ -33,20 +23,25 @@ const GENDERS = ['Open', 'Boys', 'Girls', 'Mixed'];
 const TECH_TYPES = ['Coding', 'Quiz', 'Hackathon', 'Robotics', 'Paper presentation', 'Project exhibition', 'Design / Web', 'Gaming', 'Other'];
 const TECH_MODES = ['Offline', 'Online'];
 
-// Points each rank earns for its department. Change these numbers to change the leaderboard.
 const RANK_POINTS = { '1st Place': 5, '2nd Place': 3, '3rd Place': 1 };
 
 async function request(path, options = {}) {
   let res;
   try {
-    res = await fetch(`${API_BASE}${path}`, { headers: { 'Content-Type': 'application/json' }, ...options });
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        ...authHeaders(),
+        ...(options.headers || {}),
+      },
+    });
   } catch {
     throw new Error(`Cannot reach the server at ${API_BASE}. Is it running?`);
   }
   if (!res.ok) {
     const isList = path.split('/').filter(Boolean).length === 1;
     if (res.status === 404 && isList) {
-      throw new Error('The server has no list for this yet. Check that db.json has "fests", "programs", "sections", "deptFunds", "payments" and "registrations", then restart it.');
+      throw new Error('The server has no list for this yet. Check that "fests", "programs", "sections", "deptFunds", "payments" and "registrations" are configured on the backend.');
     }
     throw new Error(res.status === 404 ? 'That item was not found. It may already have been removed.' : 'The server could not save that. Please try again.');
   }
@@ -62,17 +57,16 @@ const fmtDate = (s) => {
   return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
+const fmtCurrency = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN')}`;
+
 const sameId = (a, b) => String(a) === String(b);
 
-// Run many requests a few at a time, so a long list does not flood the server
 const inChunks = async (items, fn, size = 15) => {
   for (let i = 0; i < items.length; i += size) {
     await Promise.all(items.slice(i, i + size).map(fn));
   }
 };
 
-// Read a staff list from CSV text, or from rows pasted out of Excel.
-// Columns: Staff ID, Name, Department (department optional). A header row is optional.
 const parseStaffList = (text) => {
   const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (lines.length === 0) return { rows: [], duplicates: 0 };
@@ -113,19 +107,13 @@ const parseStaffList = (text) => {
   });
   return { rows, duplicates };
 };
-// Compare names and departments while ignoring case, dots and spaces ("Dr. Reshmi" = "dr reshmi")
+
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const cleanDeptLabel = (d) => String(d || '').replace(/"/g, '').trim();
 const hasAssignments = (p) => Object.values(p.assignments || {}).some((list) => list.length > 0);
-// Staff = approved teachers. (Students, volunteers, judges and the committee are not teachers.)
 const isTeacher = (u) => u.baseType === 'teacher' && u.approved !== false && !u.rejected;
 const hasDuty = (u, duty) => (u.duties || []).includes(duty) || u.role === duty;
-const DUTY_LABELS = {
-  dept_coordinator: 'coordinator', class_teacher: 'class teacher', program_teacher: 'program teacher',
-  board_incharge: 'board in-charge', volunteer: 'volunteer', judge: 'judge',
-};
-const dutyNames = (u) => (u.duties || []).map((d) => DUTY_LABELS[d] || d).join(', ');
 
-// Programs saved before categories existed count as cultural
 const categoryOf = (p) => p.category || 'cultural';
 const usesStage = (cat) => cat === 'cultural' || cat === 'literary';
 const teamWord = (cat) => (cat === 'sports' || cat === 'technical' ? 'Team' : 'Group');
@@ -149,7 +137,6 @@ const programDetails = (p) => {
   return parts;
 };
 
-// ---- Pending approvals: the five roles that can register ----
 const PENDING_ROLES = [
   { id: 'all', label: 'All' },
   { id: 'student', label: 'Student' },
@@ -159,7 +146,6 @@ const PENDING_ROLES = [
   { id: 'dept_coordinator', label: 'Department Coordinator' },
 ];
 
-// Works out which of the five roles a registration is asking for
 const roleKeyOf = (u) => {
   if (hasDuty(u, 'dept_coordinator')) return 'dept_coordinator';
   if (hasDuty(u, 'class_teacher')) return 'class_teacher';
@@ -189,7 +175,17 @@ function Field({ id, label, hint, children }) {
   );
 }
 
-const EMPTY_FEST = { name: '', mode: 'College', deadline: '', festDate: '', venue: '', volunteerCoord: '', foodCoord: '', mediaCoord: '' };
+const EMPTY_FEST = {
+  name: '',
+  mode: 'College',
+  deadline: '',
+  festDate: '',
+  venue: '',
+  volunteerCoord: '',
+  foodCoord: '',
+  mediaCoord: '',
+  judgeCoord: '',
+};
 const EMPTY_PROGRAM = {
   id: null, name: '', category: 'cultural', stage: 'onstage', language: [],
   sportType: 'Track', gender: 'Open', techType: 'Coding', mode: 'Offline',
@@ -198,7 +194,6 @@ const EMPTY_PROGRAM = {
 const EMPTY_COORD = { teacherName: '', department: '' };
 
 export default function AdminDashboard() {
-  // Remember the tab, so coming back from a fest's roster page lands on Department Submissions
   const [activeTab, setActiveTab] = useState(() => sessionStorage.getItem('admin_tab') || 'fests');
 
   const [users, setUsers] = useState([]);
@@ -211,37 +206,46 @@ export default function AdminDashboard() {
 
   const [festForm, setFestForm] = useState(EMPTY_FEST);
   const [programFestId, setProgramFestId] = useState('');
-  const [programForm, setProgramForm] = useState(null); // null = closed
+  const [programForm, setProgramForm] = useState(null);
   const [coordForm, setCoordForm] = useState(EMPTY_COORD);
-  const [headsForm, setHeadsForm] = useState(null); // committee heads editor, null = closed
+  const [headsForm, setHeadsForm] = useState(null);
   const [coordFestId, setCoordFestId] = useState('');
+  const [overviewFestId, setOverviewFestId] = useState('');
   const [registrations, setRegistrations] = useState([]);
+  const [deptFunds, setDeptFunds] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [fundRemittances, setFundRemittances] = useState([]);
   const [staffLists, setStaffLists] = useState([]);
   const [staffText, setStaffText] = useState('');
-  const [results, setResults] = useState([]); // marks the judges have saved
+  const [results, setResults] = useState([]);
 
   const loadAll = useCallback(async () => {
-    const [u, f, p, regs, staff, res] = await Promise.all([
+    const [u, f, p, regs, df, pay, staff, res, rems] = await Promise.all([
       request('/users'),
       request('/fests'),
       request('/programs'),
       request('/registrations').catch(() => []),
+      request('/deptFunds').catch(() => []),
+      request('/payments').catch(() => []),
       request('/staffLists').catch(() => []),
       request('/results').catch(() => []),
+      request('/fundRemittances').catch(() => []),
     ]);
-    setUsers(u);
-    setFests(f);
-    setPrograms(p);
+    setUsers(Array.isArray(u) ? u : []);
+    setFests(Array.isArray(f) ? f : []);
+    setPrograms(Array.isArray(p) ? p : []);
     setRegistrations(Array.isArray(regs) ? regs : []);
+    setDeptFunds(Array.isArray(df) ? df : []);
+    setPayments(Array.isArray(pay) ? pay : []);
     setStaffLists(Array.isArray(staff) ? staff : []);
     setResults(Array.isArray(res) ? res : []);
+    setFundRemittances(Array.isArray(rems) ? rems : []);
   }, []);
 
   useEffect(() => {
     loadAll().catch((e) => { setError(e.message); setFests([]); });
   }, [loadAll]);
 
-  // Keep the page fresh: reload when the window regains focus and every 15 seconds
   useEffect(() => {
     const refresh = () => { loadAll().catch(() => {}); };
     window.addEventListener('focus', refresh);
@@ -252,21 +256,24 @@ export default function AdminDashboard() {
     };
   }, [loadAll]);
 
-  // Pick a fest for the Programs tab as soon as there is one
   useEffect(() => {
     if (fests && fests.length > 0 && !fests.some((f) => sameId(f.id, programFestId))) {
       setProgramFestId(String(fests[fests.length - 1].id));
     }
   }, [fests, programFestId]);
 
-  // Pick a fest for the Coordinators tab as soon as there is one
   useEffect(() => {
     if (fests && fests.length > 0 && !fests.some((f) => sameId(f.id, coordFestId))) {
       setCoordFestId(String(fests[fests.length - 1].id));
     }
   }, [fests, coordFestId]);
 
-  // Runs a save, reloads the data, and shows either a notice or the error.
+  useEffect(() => {
+    if (fests && fests.length > 0 && !fests.some((f) => sameId(f.id, overviewFestId))) {
+      setOverviewFestId(String(fests[fests.length - 1].id));
+    }
+  }, [fests, overviewFestId]);
+
   const run = async (fn, successMessage) => {
     setBusy(true);
     setError('');
@@ -291,13 +298,9 @@ export default function AdminDashboard() {
     setNotice('');
   };
 
-  // Light check only: json-server has no real login protection.
-  if (!localStorage.getItem('fest_user')) return <Navigate to="/login" replace />;
+  if (!(sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user'))) return <Navigate to="/login" replace />;
 
-  const staff = users.filter(isTeacher);
   const coordinatorUsers = users.filter((u) => hasDuty(u, 'dept_coordinator') && u.approved !== false && !u.rejected);
-  // Every registration waiting for approval: students, volunteers, class teachers, teachers, coordinators
-  // The admin approves teachers only. Students are approved by the class list or their class teacher.
   const pendingUsers = users.filter((u) => u.approved === false && !u.rejected && u.baseType === 'teacher');
   const visiblePending = pendingUsers;
   const programsOf = (festId) => programs.filter((p) => sameId(p.festId, festId));
@@ -307,26 +310,139 @@ export default function AdminDashboard() {
   const festCoordinators = coordinatorUsers.filter((u) =>
     coordFest && Array.isArray(u.festIds) && u.festIds.some((id) => sameId(id, coordFest.id))
   );
-  // Rosters forwarded by department coordinators (saved on the server).
-  // The Department Submissions tab groups them by fest; the count here feeds the sidebar badge.
   const forwardedRegs = registrations.filter((r) => r.status === 'Forwarded to Admin');
   const submissionCount = new Set(forwardedRegs.map((r) => `${r.festId}|${r.deptKey}`)).size;
 
-  // Department points from the marks judges have submitted.
-  // Drafts do not count. If a student has more than one submitted row, the latest one is used.
+  // ---------- Overview: Fest, Participation, Funds & Leaderboard from DB ----------
+  const overviewFest = (fests || []).find((f) => sameId(f.id, overviewFestId)) || (fests && fests[fests.length - 1]) || null;
+  const overviewPrograms = overviewFest ? programsOf(overviewFest.id) : programs;
+  const overviewRegs = registrations.filter(
+    (r) => r.status !== 'Pending Submission' && (!overviewFest || sameId(r.festId, overviewFest.id))
+  );
+
+  const participationSummary = (() => {
+    const isSchool = overviewFest?.mode === 'School';
+    const minRequired = 3;
+    const goingAhead = [];
+    const cancelled = [];
+
+    overviewPrograms.forEach((prog) => {
+      const progRegs = overviewRegs.filter((r) => sameId(r.programId, prog.id));
+      const deptMap = new Map();
+      const studentNames = new Set();
+
+      progRegs.forEach((r) => {
+        const key = r.deptKey || norm(r.department) || 'unknown';
+        const label = cleanDeptLabel(r.department || r.deptKey) || 'Unknown';
+        if (!deptMap.has(key)) deptMap.set(key, label);
+        const sName = String(r.studentName || r.name || '').trim();
+        if (sName) studentNames.add(sName);
+      });
+
+      const deptCount = deptMap.size;
+      const participantCount = studentNames.size > 0 ? studentNames.size : progRegs.length;
+      const metricCount = isSchool ? participantCount : deptCount;
+      const deptsList = [...deptMap.values()];
+      const namesList = [...studentNames];
+
+      if (metricCount >= minRequired) {
+        goingAhead.push({
+          id: prog.id,
+          name: prog.name,
+          deptCount,
+          participantCount,
+          deptsText: deptsList.join(', ') || '—',
+        });
+      } else {
+        cancelled.push({
+          id: prog.id,
+          name: prog.name,
+          deptCount,
+          participantCount,
+          isSchool,
+          joinedText: namesList.length > 0 ? namesList.join(', ') : deptsList.join(', ') || 'None yet',
+        });
+      }
+    });
+
+    return { isSchool, minRequired, goingAhead, cancelled };
+  })();
+
+  const deptFundRows = (() => {
+    const byDept = new Map();
+    const ensureDept = (key, label) => {
+      const k = key || norm(label);
+      if (!k) return null;
+      if (!byDept.has(k)) {
+        byDept.set(k, {
+          key: k,
+          name: cleanDeptLabel(label) || k,
+          target: 0,
+          collected: 0,
+          paidCount: 0,
+          totalStudents: 0,
+          remitted: 0,
+        });
+      }
+      const entry = byDept.get(k);
+      if (label && (!entry.name || entry.name === k)) entry.name = cleanDeptLabel(label);
+      return entry;
+    };
+
+    users.forEach((u) => {
+      if (u.department) {
+        const row = ensureDept(norm(u.department), u.department);
+        if (row && u.baseType === 'student' && u.approved !== false && !u.rejected) {
+          row.totalStudents += 1;
+        }
+      }
+    });
+
+    deptFunds
+      .filter((f) => !overviewFest || sameId(f.festId, overviewFest.id))
+      .forEach((f) => {
+        const row = ensureDept(f.deptKey || norm(f.department), f.department || f.deptKey);
+        if (row) row.target = Number(f.amount) || 0;
+      });
+
+    const userById = new Map(users.map((u) => [String(u.id), u]));
+    payments
+      .filter((p) => p.status === 'paid' && (!overviewFest || sameId(p.festId, overviewFest.id)))
+      .forEach((p) => {
+        const stu = userById.get(String(p.studentId));
+        const deptName = p.department || stu?.department || '';
+        const row = ensureDept(p.deptKey || norm(deptName), deptName);
+        if (row) {
+          row.collected += Number(p.amount) || 0;
+          row.paidCount += 1;
+        }
+      });
+
+    fundRemittances
+      .filter((r) => !overviewFest || sameId(r.festId, overviewFest.id))
+      .forEach((r) => {
+        const row = ensureDept(r.deptKey || norm(r.department), r.department || r.deptKey);
+        if (row) row.remitted += Number(r.amount) || 0;
+      });
+
+    return [...byDept.values()].sort((a, b) => b.collected - a.collected || b.target - a.target);
+  })();
+
+  const totalDeptCollected = deptFundRows.reduce((sum, d) => sum + d.collected, 0);
+
   const deptTotals = (() => {
     const latest = new Map();
     results
-      .filter((x) => x.status === 'submitted')
+      .filter((x) => x.status === 'submitted' && (!overviewFest || !x.festId || sameId(x.festId, overviewFest.id)))
       .forEach((x) => {
         const old = latest.get(x.registrationId);
         if (!old || String(x.submittedAt) > String(old.submittedAt)) latest.set(x.registrationId, x);
       });
     const totals = new Map();
     latest.forEach((x) => {
-      const key = x.deptKey || String(x.department || '').replace(/"/g, '');
+      const key = x.deptKey || norm(x.department) || cleanDeptLabel(x.department);
       const t = totals.get(key) || {
-        name: String(x.department || x.deptKey || 'Unknown').replace(/"/g, ''),
+        name: cleanDeptLabel(x.department || x.deptKey) || 'Unknown',
         points: 0,
       };
       t.points += RANK_POINTS[x.rank] || 0;
@@ -335,7 +451,6 @@ export default function AdminDashboard() {
     return [...totals.values()].sort((a, b) => b.points - a.points);
   })();
 
-  // Coordinators from before fests were tracked: not linked to any fest yet
   const unlinkedCoordinators = coordinatorUsers.filter((u) => !Array.isArray(u.festIds) || u.festIds.length === 0);
 
   // ---------- Fests ----------
@@ -361,9 +476,10 @@ export default function AdminDashboard() {
         deadline: f.deadline,
         festDate: f.festDate,
         venue: f.venue.trim(),
-        volunteerCoord: f.volunteerCoord || 'Unassigned',
-        foodCoord: f.foodCoord || 'Unassigned',
-        mediaCoord: f.mediaCoord || 'Unassigned',
+        volunteerCoord: (f.volunteerCoord || '').trim() || 'Unassigned',
+        foodCoord: (f.foodCoord || '').trim() || 'Unassigned',
+        mediaCoord: (f.mediaCoord || '').trim() || 'Unassigned',
+        judgeCoord: (f.judgeCoord || '').trim() || 'Unassigned',
         published: false,
         createdAt: new Date().toISOString(),
       })),
@@ -377,7 +493,7 @@ export default function AdminDashboard() {
       setError('Teachers are already assigned to programs in this fest, so it cannot be deleted.');
       return;
     }
-    if (!window.confirm(`Delete "${fest.name}" with its programs?`)) return;
+    if (!await confirmAction(`Delete "${fest.name}" with its programs?`)) return;
     await run(async () => {
       await Promise.all(programsOf(fest.id).map((p) => request(`/programs/${p.id}`, { method: 'DELETE' })));
       await request(`/fests/${fest.id}`, { method: 'DELETE' });
@@ -389,9 +505,10 @@ export default function AdminDashboard() {
     const h = headsForm;
     const ok = await run(
       () => request(`/fests/${h.id}`, send('PATCH', {
-        volunteerCoord: h.volunteerCoord.trim() || 'Unassigned',
-        foodCoord: h.foodCoord.trim() || 'Unassigned',
-        mediaCoord: h.mediaCoord.trim() || 'Unassigned',
+        volunteerCoord: (h.volunteerCoord || '').trim() || 'Unassigned',
+        foodCoord: (h.foodCoord || '').trim() || 'Unassigned',
+        mediaCoord: (h.mediaCoord || '').trim() || 'Unassigned',
+        judgeCoord: (h.judgeCoord || '').trim() || 'Unassigned',
       })),
       `Committee heads updated for ${h.name}.`
     );
@@ -408,6 +525,7 @@ export default function AdminDashboard() {
       volunteerCoord: val(fest.volunteerCoord),
       foodCoord: val(fest.foodCoord),
       mediaCoord: val(fest.mediaCoord),
+      judgeCoord: val(fest.judgeCoord),
     });
   };
 
@@ -466,12 +584,12 @@ export default function AdminDashboard() {
       setError('Teachers are already assigned to this program. Ask the coordinators to remove them first.');
       return;
     }
-    if (!window.confirm(`Delete "${p.name}"?`)) return;
+    if (!await confirmAction(`Delete "${p.name}"?`)) return;
     await run(() => request(`/programs/${p.id}`, { method: 'DELETE' }), 'Program deleted.');
   };
 
   const handlePublish = async () => {
-    if (!window.confirm('Publish the program list? Department coordinators will be able to see it and assign teachers. You can still add programs afterwards.')) return;
+    if (!await confirmAction('Publish the program list? Department coordinators will be able to see it and assign teachers. You can still add programs afterwards.')) return;
     await run(
       () => request(`/fests/${selectedFest.id}`, send('PATCH', { published: true, publishedAt: new Date().toISOString() })),
       'Program list published. Department coordinators can now assign teachers.'
@@ -493,7 +611,6 @@ export default function AdminDashboard() {
       return;
     }
 
-    // Already a coordinator (for this or another fest): just add this fest to them
     const existingCoord = users.find(
       (u) => hasDuty(u, 'dept_coordinator') && !u.rejected && norm(u.name) === norm(name) && norm(u.department) === norm(dept)
     );
@@ -504,21 +621,25 @@ export default function AdminDashboard() {
         return;
       }
       const ok = await run(
-        () => request(`/users/${existingCoord.id}`, send('PATCH', { festIds: [...current, coordFest.id] })),
+        () => request(`/users/${existingCoord.id}`, send('PATCH', {
+          role: 'dept_coordinator',
+          duties: ['dept_coordinator'],
+          festIds: [...current, coordFest.id],
+        })),
         `${existingCoord.name} is now also a coordinator for ${coordFest.name}.`
       );
       if (ok) setCoordForm(EMPTY_COORD);
       return;
     }
 
-    // An approved teacher with this name and department becomes a coordinator
     const teacher = users.find(
       (u) => isTeacher(u) && norm(u.name) === norm(name) && norm(u.department) === norm(dept)
     );
     if (teacher) {
       const ok = await run(
         () => request(`/users/${teacher.id}`, send('PATCH', {
-          duties: Array.from(new Set([...(teacher.duties || ['teacher']), 'dept_coordinator'])),
+          role: 'dept_coordinator',
+          duties: ['dept_coordinator'],
           festIds: [coordFest.id],
         })),
         `${teacher.name} appointed as coordinator for ${dept} in ${coordFest.name}.`
@@ -527,7 +648,6 @@ export default function AdminDashboard() {
       return;
     }
 
-    // Not registered yet: save a placeholder that merges with their account after they register
     const ok = await run(
       () => request('/users', send('POST', {
         name,
@@ -546,12 +666,11 @@ export default function AdminDashboard() {
     if (ok) setCoordForm(EMPTY_COORD);
   };
 
-  // scope 'fest' removes the person from the selected fest only; 'all' removes the coordinator role entirely
   const handleRemoveCoordinator = async (u, scope = 'fest') => {
     const label = scope === 'fest' && coordFest
       ? `Remove ${u.name} as coordinator for ${coordFest.name}?`
       : `Remove ${u.name} as a coordinator?`;
-    if (!window.confirm(label)) return;
+    if (!await confirmAction(label)) return;
 
     const current = Array.isArray(u.festIds) ? u.festIds : [];
     const remaining = scope === 'fest' && coordFest ? current.filter((id) => !sameId(id, coordFest.id)) : [];
@@ -562,15 +681,13 @@ export default function AdminDashboard() {
         `${u.name} removed from ${coordFest.name}.`
       );
     } else if (!u.staffId && !u.email) {
-      // Placeholder that never registered: delete it
       await run(() => request(`/users/${u.id}`, { method: 'DELETE' }), `${u.name} is no longer a coordinator.`);
     } else {
-      // Registered teacher: keep the account, remove only the coordinator role
       await run(
         () => request(`/users/${u.id}`, send('PATCH', {
           festIds: [],
-          duties: (u.duties || []).filter((d) => d !== 'dept_coordinator'),
-          role: u.role === 'dept_coordinator' ? 'teacher' : u.role,
+          duties: ['teacher'],
+          role: 'teacher',
         })),
         `${u.name} is no longer a coordinator.`
       );
@@ -581,17 +698,19 @@ export default function AdminDashboard() {
     if (!coordFest) return;
     const current = Array.isArray(u.festIds) ? u.festIds : [];
     await run(
-      () => request(`/users/${u.id}`, send('PATCH', { festIds: [...current, coordFest.id] })),
+      () => request(`/users/${u.id}`, send('PATCH', {
+        role: 'dept_coordinator',
+        duties: ['dept_coordinator'],
+        festIds: [...current, coordFest.id],
+      })),
       `${u.name} added to ${coordFest.name}.`
     );
   };
 
   // ---------- Approvals ----------
   const handleDecide = async (user, approve) => {
-    if (!approve && !window.confirm(`Reject the request from ${user.name}?`)) return;
+    if (!approve && !await confirmAction(`Reject the request from ${user.name}?`)) return;
 
-    // Only teachers and coordinators can match a pre-added coordinator entry.
-    // Students and volunteers may have no department, so they skip this.
     if (approve && (user.baseType === 'teacher' || hasDuty(user, 'dept_coordinator'))) {
       const existingCoord = users.find(
         (u) =>
@@ -606,7 +725,9 @@ export default function AdminDashboard() {
           await request(`/users/${existingCoord.id}`, send('PATCH', {
             staffId: user.staffId,
             email: user.email,
-            password: user.password,
+            role: 'dept_coordinator',
+            duties: ['dept_coordinator'],
+            approved: true,
           }));
           await request(`/users/${user.id}`, { method: 'DELETE' });
         }, `${user.name} approved. Staff ID and Gmail updated in the coordinator list.`);
@@ -615,7 +736,10 @@ export default function AdminDashboard() {
     }
 
     await run(
-      () => request(`/users/${user.id}`, send('PATCH', approve ? { approved: true } : { rejected: true })),
+      () => request(
+        `/users/${user.id}/${approve ? 'approve' : 'reject'}`,
+        send('PATCH', approve ? { approvedBy: 'Admin' } : { rejectedBy: 'Admin' })
+      ),
       approve ? `${user.name} approved.` : `${user.name} rejected.`
     );
   };
@@ -633,7 +757,7 @@ export default function AdminDashboard() {
     try {
       setStaffText(await file.text());
       setError('');
-    } catch (err) {
+    } catch {
       setError('Could not read that file. Save it as CSV and try again.');
     }
     e.target.value = '';
@@ -647,7 +771,7 @@ export default function AdminDashboard() {
     }
     const have = new Set(staffLists.map((c) => norm(c.staffId)));
     const toAdd = parsedStaff.rows.filter((r) => mode === 'replace' || !have.has(norm(r.staffId)));
-    if (mode === 'replace' && !window.confirm(`Replace the whole staff list with ${toAdd.length} teachers?`)) return;
+    if (mode === 'replace' && !await confirmAction(`Replace the whole staff list with ${toAdd.length} teachers?`)) return;
 
     const now = new Date().toISOString();
     const ok = await run(async () => {
@@ -677,7 +801,7 @@ export default function AdminDashboard() {
     coordinators: 'Manage Coordinators',
     staff: 'Staff List',
     approvals: 'Pending Approvals',
-    submissions: 'Submitted Department Rosters',
+    submissions: 'Submitted Department Lists',
     overview: 'Funds, Participation & Leaderboards',
   };
 
@@ -687,8 +811,8 @@ export default function AdminDashboard() {
     coordinators: 'Appoint coordinators for each fest. The same person can coordinate more than one fest.',
     staff: 'Upload the institution\'s staff list so teachers with a matching Staff ID and name are approved automatically.',
     approvals: 'Review teacher registrations. Students are approved by their class list or class teacher.',
-    submissions: 'Review participant rosters forwarded by department coordinators.',
-    overview: 'A quick look at the fest. Some figures below are sample data.',
+    submissions: 'Review participant lists forwarded by department coordinators.',
+    overview: 'Live fund collections, program participation, and leaderboard standings from the database.',
   };
 
   const setF = (key) => (e) => setFestForm((f) => ({ ...f, [key]: e.target.value }));
@@ -765,22 +889,32 @@ export default function AdminDashboard() {
       onSelect={switchTab}
       badges={{ approvals: pendingUsers.length, submissions: submissionCount }}
     >
-      <header className="mb-8 flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-center">
-        <div>
-          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#D6336C]">
-            <span className="h-2 w-2 rounded-full bg-[#D6336C]" />
-            CampusFest Administration
+      <header className="relative mb-8 overflow-hidden rounded-2xl bg-[#0B3F46] text-white shadow-sm">
+        <Photo
+          src="/banner.png"
+          alt=""
+          eager
+          className="absolute inset-0 h-full w-full"
+        />
+        <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-r from-[#0B3F46] via-[#0B3F46]/80 to-[#0B3F46]/20" />
+
+        <div className="relative z-10 flex flex-col justify-between gap-4 px-6 py-8 sm:flex-row sm:items-center sm:px-8 sm:py-10">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#F5A623]">
+              <span className="h-2 w-2 rounded-full bg-[#F5A623]" />
+              CampusFest Administration
+            </div>
+            <h1 className="fest-display text-2xl font-extrabold tracking-tight sm:text-3xl">{titles[activeTab]}</h1>
+            <p className="mt-2 max-w-xl text-sm text-white/75">{subtitles[activeTab]}</p>
           </div>
-          <h1 className="fest-display text-2xl font-extrabold tracking-tight text-[#0B3F46] sm:text-3xl">{titles[activeTab]}</h1>
-          <p className="mt-2 text-sm text-slate-500">{subtitles[activeTab]}</p>
-        </div>
-        <div className="flex items-center gap-3 self-start sm:self-auto">
-          <Link
-            to="/"
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-[#0B3F46] transition hover:border-[#F5A623] hover:bg-[#FFF8E9]"
-          >
-            ← Back to Home
-          </Link>
+          <div className="flex items-center gap-3 self-start sm:self-auto">
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-[#F5A623]/40"
+            >
+              ← Back to Home
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -792,7 +926,6 @@ export default function AdminDashboard() {
       )}
       {fests === null && !error && <p className="mb-6 text-sm text-slate-600">Loading...</p>}
 
-      {/* FESTS & COMMITTEES */}
       {activeTab === 'fests' && fests && (
         <div className="space-y-8">
           <section className={`${cardStyle} p-6 sm:p-8`}>
@@ -832,6 +965,9 @@ export default function AdminDashboard() {
               <Field id="mediaHead" label="Media and publicity head">
                 <input id="mediaHead" type="text" placeholder="e.g. Dr. Arun Das" value={festForm.mediaCoord} onChange={setF('mediaCoord')} className={inputStyle} />
               </Field>
+              <Field id="judgeHead" label="Judge committee head">
+                <input id="judgeHead" type="text" placeholder="e.g. Dr. Kavitha Menon" value={festForm.judgeCoord} onChange={setF('judgeCoord')} className={inputStyle} />
+              </Field>
 
               <div className="pt-2 sm:col-span-2 xl:col-span-3">
                 <button type="submit" disabled={busy} className={`${primaryButton} w-full`}>
@@ -848,7 +984,7 @@ export default function AdminDashboard() {
                 <h3 className="fest-display text-lg font-bold text-[#0B3F46]">Committee heads for {headsForm.name}</h3>
                 <p className="mt-1 text-xs text-slate-500">Leave a box empty to keep that committee Unassigned.</p>
               </div>
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Field id="editVol" label="Volunteer committee head">
                   <input id="editVol" autoFocus type="text" placeholder="e.g. Dr. Rajesh Kumar" value={headsForm.volunteerCoord} onChange={(e) => setHeadsForm((h) => ({ ...h, volunteerCoord: e.target.value }))} className={inputStyle} />
                 </Field>
@@ -857,6 +993,9 @@ export default function AdminDashboard() {
                 </Field>
                 <Field id="editMedia" label="Media and publicity head">
                   <input id="editMedia" type="text" placeholder="e.g. Dr. Arun Das" value={headsForm.mediaCoord} onChange={(e) => setHeadsForm((h) => ({ ...h, mediaCoord: e.target.value }))} className={inputStyle} />
+                </Field>
+                <Field id="editJudge" label="Judge committee head">
+                  <input id="editJudge" type="text" placeholder="e.g. Dr. Kavitha Menon" value={headsForm.judgeCoord || ''} onChange={(e) => setHeadsForm((h) => ({ ...h, judgeCoord: e.target.value }))} className={inputStyle} />
                 </Field>
               </div>
               <div className="flex gap-3">
@@ -913,6 +1052,7 @@ export default function AdminDashboard() {
                         {headLine('Volunteer', fest.volunteerCoord)}
                         {headLine('Food', fest.foodCoord)}
                         {headLine('Media', fest.mediaCoord)}
+                        {headLine('Judge', fest.judgeCoord)}
                       </td>
                       <td className="p-4 text-sm font-semibold text-[#0B3F46]">{programsOf(fest.id).length}</td>
                       <td className="p-4">
@@ -952,7 +1092,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* PROGRAMS */}
       {activeTab === 'programs' && fests && (
         <div className="space-y-6">
           {fests.length === 0 ? (
@@ -1124,7 +1263,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* COORDINATORS (per fest) */}
       {activeTab === 'coordinators' && fests && (
         <div className="space-y-8">
           {fests.length === 0 ? (
@@ -1264,7 +1402,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* STAFF LIST */}
       {activeTab === 'staff' && fests && (
         <div className="space-y-8">
           <section className={`${cardStyle} p-6 sm:p-8`}>
@@ -1384,7 +1521,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* APPROVALS */}
       {activeTab === 'approvals' && fests && (
         <section className={`${cardStyle} p-6 sm:p-8`}>
           <div className="mb-6 flex items-center gap-3">
@@ -1456,7 +1592,6 @@ export default function AdminDashboard() {
         </section>
       )}
 
-      {/* SUBMISSIONS: one card per fest; a card opens /admin/submissions/:festId */}
       {activeTab === 'submissions' && fests && (
         <SubmissionsFestCards
           registrations={forwardedRegs}
@@ -1464,9 +1599,30 @@ export default function AdminDashboard() {
         />
       )}
 
-      {/* OVERVIEW */}
       {activeTab === 'overview' && fests && (
         <div className="space-y-8">
+          {fests.length > 0 && (
+            <section className={`${cardStyle} flex flex-col gap-3 p-5 sm:flex-row sm:items-end sm:justify-between sm:px-6`}>
+              <div className="w-full max-w-sm">
+                <Field id="overviewFest" label="Fest">
+                  <select
+                    id="overviewFest"
+                    value={overviewFest ? overviewFest.id : ''}
+                    onChange={(e) => setOverviewFestId(e.target.value)}
+                    className={inputStyle}
+                  >
+                    {fests.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+              {overviewFest && (
+                <p className="text-xs text-slate-500">
+                  Mode: <span className="font-semibold text-[#0B3F46]">{overviewFest.mode}</span> · Total collected: <span className="font-semibold text-[#0B3F46]">{fmtCurrency(totalDeptCollected)}</span>
+                </p>
+              )}
+            </section>
+          )}
+
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             <div className={`${cardStyle} p-6`}>
               <div className="mb-4 flex items-center justify-between">
@@ -1491,8 +1647,10 @@ export default function AdminDashboard() {
                 <div className="rounded-xl bg-[#FCE7EF] p-3 text-[#D6336C]"><Award className="h-5 w-5" /></div>
                 <span className="text-xs font-medium text-slate-500">Minimum rule</span>
               </div>
-              <p className="fest-display text-3xl font-extrabold text-[#0B3F46]">3</p>
-              <p className="mt-1 text-sm text-slate-500">Students (school) or departments (college)</p>
+              <p className="fest-display text-3xl font-extrabold text-[#0B3F46]">{participationSummary.minRequired}</p>
+              <p className="mt-1 text-sm text-slate-500">
+                {participationSummary.isSchool ? 'Participants (school)' : 'Departments (college)'}
+              </p>
             </div>
           </div>
 
@@ -1502,7 +1660,7 @@ export default function AdminDashboard() {
               <div>
                 <h2 className="fest-display text-lg font-bold text-[#0B3F46]">Program Participation and Cancellation Monitor</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Sample data. Programs below the minimum are flagged for cancellation once data entry closes. A school program needs at least 3 participants. A college program needs at least 3 departments.
+                  Live participation from registrations. A school program needs at least {participationSummary.minRequired} participants; a college program needs at least {participationSummary.minRequired} departments.
                 </p>
               </div>
             </div>
@@ -1510,33 +1668,50 @@ export default function AdminDashboard() {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <h4 className="mb-3 flex items-center gap-2 text-sm font-bold text-[#0B3F46]">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" /> Going ahead
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" /> Going ahead ({participationSummary.goingAhead.length})
                 </h4>
-                <ul className="space-y-3 text-xs text-slate-600">
-                  <li className="rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="mb-1 flex justify-between font-semibold text-[#0B3F46]">
-                      <span>English Recitation</span><span className="text-emerald-700">5 depts / 14 students</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500">CSE, ECE, ME, EEE, CE</p>
-                  </li>
-                  <li className="rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="mb-1 flex justify-between font-semibold text-[#0B3F46]">
-                      <span>Classical Dance</span><span className="text-emerald-700">4 depts / 8 students</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500">CSE, ECE, ME, CE</p>
-                  </li>
-                </ul>
+                {participationSummary.goingAhead.length === 0 ? (
+                  <p className="text-xs text-slate-500">No programs have reached the minimum threshold yet.</p>
+                ) : (
+                  <ul className="space-y-3 text-xs text-slate-600">
+                    {participationSummary.goingAhead.map((item) => (
+                      <li key={item.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="mb-1 flex justify-between font-semibold text-[#0B3F46]">
+                          <span>{item.name}</span>
+                          <span className="text-emerald-700">
+                            {item.deptCount} {item.deptCount === 1 ? 'dept' : 'depts'} / {item.participantCount} {item.participantCount === 1 ? 'student' : 'students'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">{item.deptsText}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
+
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <h4 className="mb-3 flex items-center gap-2 text-sm font-bold text-rose-700">
-                  <span className="h-2 w-2 rounded-full bg-rose-500" /> Cancelled (below the minimum)
+                  <span className="h-2 w-2 rounded-full bg-rose-500" /> Below minimum ({participationSummary.cancelled.length})
                 </h4>
-                <ul className="space-y-2 text-xs text-slate-600">
-                  <li className="rounded-lg border border-slate-200 bg-white p-2.5">
-                    <div className="flex justify-between gap-2"><span>Sanskrit Drama</span><span className="font-semibold text-rose-700">1 department</span></div>
-                    <p className="mt-1 text-[11px] text-slate-500">Had joined: Arjun, Rahul</p>
-                  </li>
-                </ul>
+                {participationSummary.cancelled.length === 0 ? (
+                  <p className="text-xs text-slate-500">All programs meet the minimum requirement.</p>
+                ) : (
+                  <ul className="space-y-2 text-xs text-slate-600">
+                    {participationSummary.cancelled.map((item) => (
+                      <li key={item.id} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                        <div className="flex justify-between gap-2">
+                          <span className="font-medium text-slate-800">{item.name}</span>
+                          <span className="font-semibold text-rose-700">
+                            {item.isSchool
+                              ? `${item.participantCount} ${item.participantCount === 1 ? 'participant' : 'participants'}`
+                              : `${item.deptCount} ${item.deptCount === 1 ? 'department' : 'departments'}`}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">Entries: {item.joinedText}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           </section>
@@ -1546,14 +1721,41 @@ export default function AdminDashboard() {
               <h3 className="fest-display mb-1 flex items-center gap-2 font-bold text-[#0B3F46]">
                 <DollarSign className="h-5 w-5 text-[#B87908]" /> Department-wise Fund Collection
               </h3>
-              <p className="mb-4 text-xs text-slate-500">Sample data.</p>
+              <p className="mb-4 text-xs text-slate-500">
+                Fee status, student payment counts, and remitted amounts per department.
+              </p>
               <div className="space-y-3 text-xs">
-                {[['Computer Science (CSE)', '₹12,450'], ['Electronics and Communication (ECE)', '₹9,800'], ['Mechanical Engineering (ME)', '₹11,200']].map(([dept, amount]) => (
-                  <div key={dept} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <span className="font-semibold text-slate-700">{dept}</span>
-                    <span className="font-bold text-[#0B3F46]">{amount}</span>
-                  </div>
-                ))}
+                {deptFundRows.length === 0 ? (
+                  <p className="text-slate-500">No department fund or payment records yet.</p>
+                ) : (
+                  deptFundRows.map((d) => {
+                    const isCleared = d.totalStudents > 0 && d.paidCount >= d.totalStudents;
+                    const statusLabel = isCleared ? 'All Paid' : d.paidCount > 0 ? 'In Progress' : 'Pending';
+                    const statusClass = isCleared
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : d.paidCount > 0
+                        ? 'bg-amber-50 text-amber-800'
+                        : 'bg-slate-100 text-slate-600';
+
+                    return (
+                      <div key={d.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-slate-700">{d.name}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-slate-500">
+                            {d.paidCount} / {d.totalStudents} students paid · Remitted: {fmtCurrency(d.remitted)}
+                            {d.target > 0 ? ` · Fund/Student: ${fmtCurrency(d.target)}` : ''}
+                          </p>
+                        </div>
+                        <span className="font-bold text-[#0B3F46]">{fmtCurrency(d.collected)}</span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </section>
 

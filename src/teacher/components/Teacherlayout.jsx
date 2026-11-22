@@ -14,7 +14,7 @@ export default function Teacherlayout({
   children,
 }) {
   return (
-    <div className="flex min-h-screen flex-col bg-[#F5F8F8] text-[#173B40] md:flex-row font-['DM_Sans',sans-serif]">
+    <div className="flex min-h-screen flex-col bg-[#F5F8F8] text-slate-800 md:flex-row font-['DM_Sans',sans-serif]">
       <Teachersidebar
         activeTab={activeTab}
         onSelect={onSelect}

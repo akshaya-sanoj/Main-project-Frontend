@@ -6,7 +6,6 @@ export const COORDINATOR_NAV_ITEMS = [
   { id: 'teachers', label: 'My Teachers', icon: Users },
   { id: 'funds', label: 'Classes & Fund', icon: DollarSign },
   { id: 'classLists', label: 'Class Lists', icon: FileText, badgeKey: 'classLists' },
-  { id: 'approvals', label: 'Student Approvals', icon: UserCheck, badgeKey: 'approvals' },
   { id: 'volunteers', label: 'Department Volunteers', icon: Shield },
   { id: 'submissions', label: 'Submissions to Admin', icon: Send },
 ];

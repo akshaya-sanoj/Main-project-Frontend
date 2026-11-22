@@ -1,5 +1,5 @@
 // Helpers for class lists (register numbers, names, dates of birth).
-// Put this file at src/utils/classList.js
+// File: src/utils/classList.js
 
 // Compare register numbers while ignoring case, spaces and symbols
 export const normReg = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -12,14 +12,16 @@ export const inChunks = async (items, fn, size = 15) => {
 };
 
 // Dates of birth are never stored as plain text. The class list keeps only this fingerprint
-// (a SHA-256 of register number + date). Register.jsx must use exactly the same code.
+// (a SHA-256 of normalized register number + ISO date).
 export const hashDob = async (regNo, dobIso) => {
   if (!window.crypto || !window.crypto.subtle) {
     throw new Error('The date of birth check needs a secure page (https or localhost).');
   }
-  const data = new TextEncoder().encode(`${String(regNo || '').toLowerCase().replace(/[^a-z0-9]/g, '')}|${dobIso}`);
+  const data = new TextEncoder().encode(`${normReg(regNo)}|${dobIso}`);
   const buf = await window.crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 };
 
 // Turn a date like 05/03/2004, 5-3-2004, 5.3.2004 or 2004-03-05 into 2004-03-05 (day first when written with slashes)
@@ -31,11 +33,15 @@ export const normalizeDob = (raw) => {
   let d;
   let mm = t.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (mm) {
-    y = +mm[1]; m = +mm[2]; d = +mm[3];
+    y = +mm[1];
+    m = +mm[2];
+    d = +mm[3];
   } else {
     mm = t.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
     if (!mm) return '';
-    d = +mm[1]; m = +mm[2]; y = +mm[3];
+    d = +mm[1];
+    m = +mm[2];
+    y = +mm[3];
   }
   const dt = new Date(Date.UTC(y, m - 1, d));
   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
@@ -46,11 +52,15 @@ export const normalizeDob = (raw) => {
 // Read a class list from CSV text, or from rows pasted out of Excel.
 // Columns: Register No, Name, Date of Birth (date optional). A header row is optional.
 export const parseClassList = (text) => {
-  const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (lines.length === 0) return { rows: [], duplicates: 0, withDob: 0, badDob: 0 };
 
   const delimiter = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
-  const split = (line) => line.split(delimiter).map((c) => c.trim().replace(/^"(.*)"$/, '$1').trim());
+  const split = (line) =>
+    line.split(delimiter).map((c) => c.trim().replace(/^"(.*)"$/, '$1').trim());
 
   let table = lines.map(split);
   let regCol = 0;
@@ -58,7 +68,9 @@ export const parseClassList = (text) => {
   let dobCol = 2;
 
   const headerCells = table[0].map((c) => c.toLowerCase());
-  const looksLikeHeader = headerCells.some((c) => /^(reg|register|roll|admission|name|student|s\.?no|sl|dob|date|birth)/.test(c));
+  const looksLikeHeader = headerCells.some((c) =>
+    /^(reg|register|roll|admission|name|student|s\.?no|sl|dob|date|birth)/.test(c)
+  );
   if (looksLikeHeader) {
     const r = headerCells.findIndex((c) => /(reg|roll|admission|\bid\b)/.test(c));
     const n = headerCells.findIndex((c) => /name/.test(c));
@@ -97,8 +109,20 @@ export const parseClassList = (text) => {
 
 // What the registration check found for a student, shown to whoever approves them
 export const LIST_CHECK = {
-  dob_mismatch: { text: 'On the class list, but the date of birth did not match. Check carefully.', tone: 'bg-rose-50 text-rose-700' },
-  other_class: { text: "Register number is on another class's list.", tone: 'bg-amber-50 text-amber-800' },
-  not_on_list: { text: 'Not on the class list.', tone: 'bg-slate-100 text-slate-500' },
-  unchecked: { text: 'Date of birth could not be checked.', tone: 'bg-slate-100 text-slate-500' },
+  dob_mismatch: {
+    text: 'On the class list, but the date of birth did not match. Check carefully.',
+    tone: 'bg-rose-50 text-rose-700',
+  },
+  other_class: {
+    text: "Register number is on another class's list.",
+    tone: 'bg-amber-50 text-amber-800',
+  },
+  not_on_list: {
+    text: 'Not on the class list.',
+    tone: 'bg-slate-100 text-slate-500',
+  },
+  unchecked: {
+    text: 'Date of birth could not be checked.',
+    tone: 'bg-slate-100 text-slate-500',
+  },
 };

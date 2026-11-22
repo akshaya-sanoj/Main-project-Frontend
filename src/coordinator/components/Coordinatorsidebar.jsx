@@ -32,7 +32,6 @@ export default function Coordinatorsidebar({
     }
   };
 
-  // Cursor-proximity effect
   useEffect(() => {
     const aside = asideRef.current;
     if (!aside) return undefined;
@@ -105,6 +104,11 @@ export default function Coordinatorsidebar({
 
   const hasBadge = (item) => item.badgeKey && badges[item.badgeKey] !== undefined;
   const labelWithBadge = (item) => (hasBadge(item) ? `${item.label} (${badges[item.badgeKey]})` : item.label);
+
+  const clearSession = () => {
+    sessionStorage.removeItem('fest_user');
+    localStorage.removeItem('fest_user');
+  };
 
   return (
     <>
@@ -181,7 +185,7 @@ export default function Coordinatorsidebar({
           </div>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-[#F5A623] hover:text-white"
           >
             <LogOut className="h-4 w-4" />
@@ -201,7 +205,7 @@ export default function Coordinatorsidebar({
           </Link>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="text-xs font-semibold text-[#F5A623]"
           >
             Sign Out

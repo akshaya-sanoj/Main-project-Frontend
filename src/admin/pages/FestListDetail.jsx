@@ -1,18 +1,19 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
-import { Trophy, ChevronRight } from 'lucide-react';
-import { API_BASE } from '../../services/api';
-import AdminLayout from '../../admin/components/Adminlayout';
+import { ChevronRight } from 'lucide-react';
+import { API_BASE, authHeaders } from '../../services/api';
+import AdminLayout from '../components/Adminlayout';
+import Photo from '../../components/Photo';
 import StudentCard, { CARD_THEMES } from '../components/StudentCard';
 import { groupDepartments, fmtDateTime } from './rosterGroups';
 
 /*
- * Page for one fest, grouped by PROGRAM.
- * 1. Shows a card for every program that has registrations (e.g. Recitations).
- * 2. Clicking a program shows every student registered for it, grouped by department.
- * Route: /admin/submissions/:festId
+- Page for one fest, grouped by PROGRAM.
+- 1. Shows a card for every program that has registrations (e.g. Recitations).
+- 2. Clicking a program shows every student registered for it, grouped by department.
+- Route: /admin/submissions/:festId
  */
-export default function FestRosterDetail() {
+export default function FestListDetail() {
   const { festId } = useParams();
   const navigate = useNavigate();
   const [registrations, setRegistrations] = useState(null);
@@ -21,12 +22,12 @@ export default function FestRosterDetail() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/registrations`);
+      const res = await fetch(`${API_BASE}/registrations`, { headers: authHeaders() });
       if (!res.ok) throw new Error();
       setRegistrations(await res.json());
       setError('');
     } catch {
-      setError(`Cannot load the rosters from ${API_BASE}. Is the server running?`);
+      setError(`Cannot load the Lists from ${API_BASE}. Is the server running?`);
       setRegistrations((r) => r || []);
     }
   }, []);
@@ -93,28 +94,45 @@ export default function FestRosterDetail() {
     return Array.from(map.values()).sort((a, b) => a.department.localeCompare(b.department));
   }, [selected]);
 
-  if (!localStorage.getItem('fest_user')) return <Navigate to="/login" replace />;
+  if (!(sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user'))) return <Navigate to="/login" replace />;
 
   return (
     <AdminLayout activeTab="submissions" badges={{ submissions: submissionCount }}>
-      <header className="mb-8 border-b border-slate-200 pb-6">
-        <button
-          type="button"
-          onClick={() => navigate(-1)}
-          className="mb-5 inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-[#0B3F46] transition hover:border-[#F5A623] hover:bg-[#FFF8E9] focus:outline-none focus:ring-4 focus:ring-[#F5A623]/30"
-        >
-          ← Back to Department Submissions
-        </button>
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#F5A623] text-[#2A1A00]">
-            <Trophy className="h-5 w-5" />
-          </div>
+      <header className="relative mb-8 overflow-hidden rounded-2xl bg-[#0B3F46] text-white shadow-sm">
+        <Photo
+          src="/banner.png"
+          alt=""
+          eager
+          className="absolute inset-0 h-full w-full"
+        />
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-gradient-to-r from-[#0B3F46] via-[#0B3F46]/80 to-[#0B3F46]/20"
+        />
+
+        <div className="relative z-10 flex flex-col justify-between gap-4 px-6 py-8 sm:flex-row sm:items-center sm:px-8 sm:py-10">
           <div>
-            <h1 className="fest-display text-2xl font-extrabold tracking-tight text-[#0B3F46] sm:text-3xl">{festName}</h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#F5A623]">
+              <span className="h-2 w-2 rounded-full bg-[#F5A623]" />
+              CampusFest Administration
+            </div>
+            <h1 className="fest-display text-2xl font-extrabold tracking-tight sm:text-3xl">
+              {festName}
+            </h1>
+            <p className="mt-2 max-w-xl text-sm text-white/75">
               {departments.length} {departments.length === 1 ? 'department has' : 'departments have'} forwarded {studentCount}{' '}
               {studentCount === 1 ? 'student' : 'students'} across {programs.length} {programs.length === 1 ? 'program' : 'programs'}.
             </p>
+          </div>
+
+          <div className="flex items-center gap-3 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-[#F5A623]/40"
+            >
+              ← Back to Department Submissions
+            </button>
           </div>
         </div>
       </header>
@@ -124,7 +142,7 @@ export default function FestRosterDetail() {
 
       {registrations !== null && programs.length === 0 && !error && (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8">
-          <p className="font-semibold text-slate-900">No rosters forwarded for this fest.</p>
+          <p className="font-semibold text-slate-900">No Lists forwarded for this fest.</p>
           <p className="mt-1 text-sm text-slate-600">
             Go back and pick another fest, or wait for department coordinators to forward theirs.
           </p>

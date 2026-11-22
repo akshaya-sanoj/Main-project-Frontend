@@ -1,9 +1,10 @@
-import { IndianRupee, ShieldAlert, Calendar, Radio } from 'lucide-react';
+import { Compass, IndianRupee, ShieldAlert, Calendar, Radio } from 'lucide-react';
 
 export const STUDENT_HOME_PATH = '/student';
 
 export const getStudentNavItems = ({ hasFundDues, hasAssignedDuty, hasPrograms }) => {
   const items = [
+    { id: 'overview', label: 'Overview', icon: Compass },
     { id: 'fund', label: 'Fest Fund', icon: IndianRupee, badgeKey: 'fund' },
   ];
   if (hasAssignedDuty) {

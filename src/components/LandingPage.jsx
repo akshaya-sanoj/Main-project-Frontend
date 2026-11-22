@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Trophy, Radio, ArrowRight } from 'lucide-react';
+import { Trophy, Radio, ArrowRight, Image as ImageIcon } from 'lucide-react';
 import TypingText from './TypingText';
 import SwarmCursor from './Swarmcursor';
 
@@ -9,6 +9,10 @@ import SwarmCursor from './Swarmcursor';
  * Needs: React, react-router-dom, Tailwind CSS, lucide-react
  * Links go to /login and /public-status.
  * Fonts: Bricolage Grotesque + DM Sans from Google Fonts, with system fallbacks.
+ *
+ * IMAGES: put your photos in  public/images/  with the file names below
+ * (or change the paths). If a file is missing, a teal placeholder is shown
+ * instead of a broken image.
  */
 
 const FONT_CSS = `
@@ -16,6 +20,50 @@ const FONT_CSS = `
 .fest-display { font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif; }
 .fest-body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
 `;
+
+const IMAGES = {
+  hero: { src: '/banner.png', alt: '' }, // decorative background
+  school: { src: '/school-fest.jpg', alt: 'Students performing at a school fest' },
+  college: { src: '/college-fest.jpg', alt: 'Students celebrating at a college fest' },
+  cta: { src: '/cta.jpg', alt: 'Crowd cheering at a fest stage' },
+  gallery: [
+    { src: '/1.png', alt: 'Dance performance on the main stage' },
+    { src: '/7.jpg', alt: 'Students singing in a group' },
+    { src: '/3.png', alt: 'Judges watching a performance' },
+    { src: '/4.jpg', alt: 'Winners holding their trophies' },
+    { src: '/5.jpg', alt: 'Volunteers setting up the venue' },
+    { src: '/6.jpg', alt: 'Audience clapping during the finale' },
+  ],
+};
+
+// Image with a teal placeholder if the file is missing or fails to load.
+function Photo({ src, alt, className = '', eager = false }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <div
+        role={alt ? 'img' : undefined}
+        aria-label={alt || undefined}
+        aria-hidden={alt ? undefined : 'true'}
+        className={`flex items-center justify-center bg-gradient-to-br from-[#0E4D55] to-[#0B3F46] text-white/40 ${className}`}
+      >
+        <ImageIcon className="h-8 w-8" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading={eager ? 'eager' : 'lazy'}
+      decoding="async"
+      onError={() => setFailed(true)}
+      className={`object-cover ${className}`}
+    />
+  );
+}
 
 // Lines typed in the hero heading. The first one is also the plain-text heading for screen readers.
 // Keep each line to about 36 characters so it fits on three lines or fewer.
@@ -114,6 +162,18 @@ export default function LandingPage() {
         swirl={0.6}
         clickEffect="burst"
       >
+        {/* Background photo, darker on the left so the heading stays readable */}
+        <Photo
+          src={IMAGES.hero.src}
+          alt={IMAGES.hero.alt}
+          eager
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#0B3F46] via-[#0B3F46]/85 to-[#0B3F46]/45"
+        />
+
         <div aria-hidden="true" className="pointer-events-none absolute -right-28 -top-32 h-96 w-96 rounded-full bg-[#D6336C]" />
         <div aria-hidden="true" className="pointer-events-none absolute -right-12 -top-16 h-64 w-64 rounded-full border-[22px] border-[#F5A623]" />
         <div aria-hidden="true" className="pointer-events-none absolute -bottom-48 -left-32 h-[28rem] w-[28rem] rounded-full border-[48px] border-[#F5A623]/20" />
@@ -193,6 +253,23 @@ export default function LandingPage() {
         </ol>
       </section>
 
+      {/* Photo gallery */}
+      <section className="mx-auto max-w-7xl px-6 pb-20">
+        <h2 className="fest-display max-w-xl text-3xl font-extrabold tracking-tight sm:text-4xl">
+          Moments from past fests
+        </h2>
+        <div className="mt-10 grid auto-rows-[10rem] grid-cols-2 gap-3 sm:auto-rows-[12rem] md:grid-cols-4">
+          {IMAGES.gallery.map((img, i) => (
+            <Photo
+              key={img.src}
+              src={img.src}
+              alt={img.alt}
+              className={`h-full w-full rounded-2xl ${i === 0 ? 'col-span-2 row-span-2' : ''}`}
+            />
+          ))}
+        </div>
+      </section>
+
       {/* Roles */}
       <section className="bg-slate-50">
         <div className="mx-auto grid max-w-7xl gap-12 px-6 py-20 lg:grid-cols-[1fr_1.6fr]">
@@ -221,22 +298,28 @@ export default function LandingPage() {
           Built for schools and colleges
         </h2>
         <div className="mt-10 grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl bg-[#E6F1F2] p-8">
-            <h3 className="fest-display text-xl font-semibold text-[#0B3F46]">School fests</h3>
-            <p className="mt-3 text-sm leading-relaxed text-slate-700">
-              Students are grouped by section (LP, UP, HS, HSS) and compete for their house. A program goes ahead only when at least 3 students take part.
-            </p>
-            <div className="mt-5 flex items-center gap-2" aria-label="House colours: blue, red, green, yellow">
-              {HOUSES.map((c) => (
-                <span key={c} className="h-6 w-6 rounded-full ring-2 ring-white" style={{ backgroundColor: c }} />
-              ))}
+          <div className="overflow-hidden rounded-3xl bg-[#E6F1F2]">
+            <Photo src={IMAGES.school.src} alt={IMAGES.school.alt} className="h-56 w-full" />
+            <div className="p-8">
+              <h3 className="fest-display text-xl font-semibold text-[#0B3F46]">School fests</h3>
+              <p className="mt-3 text-sm leading-relaxed text-slate-700">
+                Students are grouped by section (LP, UP, HS, HSS) and compete for their house. A program goes ahead only when at least 3 students take part.
+              </p>
+              <div className="mt-5 flex items-center gap-2" aria-label="House colours: blue, red, green, yellow">
+                {HOUSES.map((c) => (
+                  <span key={c} className="h-6 w-6 rounded-full ring-2 ring-white" style={{ backgroundColor: c }} />
+                ))}
+              </div>
             </div>
           </div>
-          <div className="rounded-3xl bg-[#FDEFD3] p-8">
-            <h3 className="fest-display text-xl font-semibold text-[#5C3B00]">College fests</h3>
-            <p className="mt-3 text-sm leading-relaxed text-slate-700">
-              Departments such as CS, EEE, Economics and History take part together. A program goes ahead only when at least 3 departments enter it, and the committee can see what each department has collected.
-            </p>
+          <div className="overflow-hidden rounded-3xl bg-[#FDEFD3]">
+            <Photo src={IMAGES.college.src} alt={IMAGES.college.alt} className="h-56 w-full" />
+            <div className="p-8">
+              <h3 className="fest-display text-xl font-semibold text-[#5C3B00]">College fests</h3>
+              <p className="mt-3 text-sm leading-relaxed text-slate-700">
+                Departments such as CS, EEE, Economics and History take part together. A program goes ahead only when at least 3 departments enter it, and the committee can see what each department has collected.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -256,7 +339,11 @@ export default function LandingPage() {
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </Link>
           </div>
-          
+          <Photo
+            src={IMAGES.cta.src}
+            alt={IMAGES.cta.alt}
+            className="h-44 w-full rounded-2xl sm:w-80"
+          />
         </div>
       </section>
 

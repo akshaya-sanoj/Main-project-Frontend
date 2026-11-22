@@ -50,13 +50,13 @@ export default function FestFundTab({
                 </span>
               ) : (
                 <button
-                  type="button"
-                  onClick={() => startPayment(due)}
-                  disabled={payBusyId !== null}
-                  className="bg-[#0B3F46] hover:bg-[#0E4D55] text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow-sm cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {payBusyId !== null && String(payBusyId) === String(due.fest.id) ? 'Processing...' : `Pay ₹{due.fund.amount}`}
-                </button>
+  type="button"
+  disabled={payBusyId === due.fest.id}
+  onClick={() => startPayment(due)}
+  className="rounded-xl bg-[#0B3F46] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#0E4D55] disabled:opacity-50"
+>
+  {payBusyId === due.fest.id ? 'Processing...' : `Pay ₹${due.fund.amount}`}
+</button>
               )}
             </div>
           ))}

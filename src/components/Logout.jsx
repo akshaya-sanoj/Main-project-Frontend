@@ -7,7 +7,7 @@ export default function Logout() {
 
   useEffect(() => {
     // Clear all session storage / fest user data
-    localStorage.removeItem('fest_user');
+    onClick={() => { sessionStorage.removeItem('fest_user'); localStorage.removeItem('fest_user'); }};
     localStorage.removeItem('userRole');
     localStorage.removeItem('coord_assignments');
     localStorage.removeItem('coord_funds');

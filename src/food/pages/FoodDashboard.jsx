@@ -347,13 +347,13 @@ export default function FoodDashboard() {
               </form>
             </section>
 
-            {/* Issued Passes Roster */}
+            {/* Issued Passes List */}
             <section className={`${cardStyle} overflow-hidden`}>
 
               <div className="flex items-center justify-between border-b border-slate-100 p-5 sm:p-6">
                 <div>
                   <h3 className="fest-display font-bold text-[#0B3F46]">
-                    Issued Passes Roster
+                    Issued Passes List
                   </h3>
 
                   <p className="mt-1 text-xs text-slate-500">

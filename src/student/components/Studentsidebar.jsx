@@ -106,6 +106,11 @@ export default function Studentsidebar({
   const hasBadge = (item) => item.badgeKey && badges[item.badgeKey] !== undefined;
   const labelWithBadge = (item) => (hasBadge(item) ? `${item.label} (${badges[item.badgeKey]})` : item.label);
 
+  const clearSession = () => {
+    sessionStorage.removeItem('fest_user');
+    localStorage.removeItem('fest_user');
+  };
+
   return (
     <>
       {/* Desktop sidebar */}
@@ -200,7 +205,7 @@ export default function Studentsidebar({
         <div className="border-t border-white/10 pt-5">
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="flex items-center gap-2 text-sm font-semibold text-[#F5A623] transition hover:text-white"
           >
             <LogOut className="h-4 w-4" /> Sign Out
@@ -219,7 +224,7 @@ export default function Studentsidebar({
           </Link>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="text-xs font-semibold text-[#F5A623]"
           >
             Sign Out

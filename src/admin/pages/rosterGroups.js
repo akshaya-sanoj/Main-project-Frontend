@@ -1,5 +1,5 @@
-// Helpers for rosters that department coordinators forwarded to the admin.
-// A forwarded roster is a /registrations record with status "Forwarded to Admin".
+// Helpers for Lists that department coordinators forwarded to the admin.
+// A forwarded List is a /registrations record with status "Forwarded to Admin".
 
 export const isForwarded = (r) => r.status === 'Forwarded to Admin';
 

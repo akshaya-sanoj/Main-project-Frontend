@@ -109,46 +109,41 @@ export default function Teachersidebar({
   const hasBadge = (item) => item.badgeKey && badges[item.badgeKey] !== undefined;
   const labelWithBadge = (item) => (hasBadge(item) ? `${item.label} (${badges[item.badgeKey]})` : item.label);
 
-  const teacherInitials = teacher?.name
-    ? teacher.name.split(' ').map((n) => n[0]).join('').substring(0, 2).toUpperCase()
-    : 'TR';
+  const clearSession = () => {
+    sessionStorage.removeItem('fest_user');
+    localStorage.removeItem('fest_user');
+  };
 
   return (
     <>
       {/* Desktop sidebar */}
       <aside
         ref={asideRef}
-        className="hidden md:flex w-72 shrink-0 flex-col justify-between bg-[#0B3F46] p-6 text-white md:sticky md:top-0 md:h-screen md:overflow-y-auto"
+        style={{ backgroundColor: '#072C31' }}
+        className="hidden w-72 shrink-0 flex-col justify-between bg-[#072C31] p-6 text-white md:sticky md:top-0 md:flex md:h-screen md:overflow-y-auto"
       >
         <div>
           <Link to={TEACHER_HOME_PATH} className="mb-8 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#F5A623] text-[#0B3F46]">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#F5A623] text-[#2A1A00]">
               <GraduationCap className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-extrabold">CampusFest</h2>
+              <h2 className="fest-display text-lg font-extrabold">CampusFest</h2>
               <p className="text-[10px] font-semibold uppercase tracking-widest text-[#F5A623]">
                 Faculty Portal
               </p>
             </div>
           </Link>
 
-          <div className="mb-6 rounded-2xl border border-white/15 bg-white/10 p-3.5">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#F5A623] font-bold text-[#0B3F46]">
-                {teacherInitials}
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs font-bold truncate">{teacher?.name || 'Faculty'}</p>
-                <p className="mt-0.5 text-[10px] text-[#F5A623] truncate">{dept}</p>
-                {isClassTeacher && (
-                  <p className="mt-0.5 text-[10px] text-white/70 truncate">Class: {classSection}</p>
-                )}
-              </div>
-            </div>
+          <div className="mb-6 rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="truncate text-xs font-semibold text-white">{teacher?.name || 'Faculty'}</p>
+            <p className="mt-1 truncate text-[10px] text-[#F5A623]">Dept: {dept || 'N/A'}</p>
+            {isClassTeacher && (
+              <p className="truncate text-[10px] text-white/60">Class: {classSection}</p>
+            )}
           </div>
 
-          {/* Emergency Support Box */}
+          {/* Emergency Support */}
           <div className="mb-6 rounded-2xl border border-rose-500/30 bg-rose-500/20 p-4">
             <p className="mb-2 flex items-center gap-1.5 text-xs font-bold text-rose-200">
               <ShieldAlert size={14} /> Emergency Support
@@ -156,14 +151,14 @@ export default function Teachersidebar({
             <button
               type="button"
               onClick={onEmergencyCall}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-3 py-2.5 text-xs font-extrabold text-white transition hover:bg-rose-700 shadow-sm"
+              className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-rose-600 px-3 py-2.5 text-xs font-extrabold text-white shadow-sm transition hover:bg-rose-700"
             >
               <PhoneCall size={14} /> Call Volunteer Team
             </button>
           </div>
 
           <p className="mb-3 px-2 text-[10px] font-bold uppercase tracking-[2px] text-white/50">
-            Faculty Actions
+            Navigation
           </p>
 
           <nav aria-label="Faculty Navigation" className="space-y-1">
@@ -193,12 +188,12 @@ export default function Teachersidebar({
                       {String(i + 1).padStart(2, '0')}
                     </span>
                   )}
-                  {showIcons && <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                  {showIcons && Icon && <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />}
                   <span className="min-w-0 flex-1 leading-snug">{item.label}</span>
                   {hasBadge(item) && (
                     <span
                       className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                        active ? 'bg-[#F5A623] text-[#0B3F46]' : 'bg-white/15 text-white'
+                        active ? 'bg-[#F5A623] text-[#2A1A00]' : 'bg-white/15 text-white'
                       }`}
                     >
                       {badges[item.badgeKey]}
@@ -213,27 +208,26 @@ export default function Teachersidebar({
         <div className="border-t border-white/10 pt-5">
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
-            className="flex items-center gap-2 text-sm font-semibold text-white/70 hover:text-[#F5A623] transition"
+            onClick={clearSession}
+            className="flex items-center gap-2 text-sm font-semibold text-[#F5A623] transition hover:text-white"
           >
-            <LogOut size={16} />
-            Sign Out
+            <LogOut className="h-4 w-4" /> Sign Out
           </Link>
         </div>
       </aside>
 
       {/* Mobile top bar */}
-      <div className="w-full bg-[#0B3F46] text-white md:hidden">
+      <div style={{ backgroundColor: '#072C31' }} className="w-full bg-[#072C31] text-white md:hidden">
         <div className="flex items-center justify-between px-4 py-3">
           <Link to={TEACHER_HOME_PATH} className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F5A623] text-[#0B3F46]">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F5A623] text-[#2A1A00]">
               <GraduationCap className="h-4 w-4" />
             </div>
             <span className="font-extrabold">CampusFest</span>
           </Link>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="text-xs font-semibold text-[#F5A623]"
           >
             Sign Out
@@ -249,7 +243,7 @@ export default function Teachersidebar({
                   type="button"
                   onClick={() => handleClick(item.id)}
                   className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${
-                    active ? 'bg-[#F5A623] text-[#0B3F46]' : 'bg-white/10 text-white/80'
+                    active ? 'bg-[#F5A623] text-[#2A1A00]' : 'bg-white/10 text-white/80'
                   }`}
                 >
                   {labelWithBadge(item)}

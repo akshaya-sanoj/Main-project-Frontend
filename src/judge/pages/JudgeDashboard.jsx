@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Award,
@@ -12,24 +12,46 @@ import {
   MapPin,
   Trophy,
 } from 'lucide-react';
-import { API_BASE } from '../../services/api';
+import { API_BASE, authHeaders } from '../../services/api';
 
 const FONT_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap');
 `;
 
 const RANKS = ['1st Place', '2nd Place', '3rd Place', 'A Grade', 'B Grade'];
+const MIN_REQUIRED = 3;
+
+const normKey = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+
+const chestSortKey = (reg) => {
+  const rawChest = reg.chestNo ?? reg.chestNumber ?? reg.id ?? '';
+  const digits = String(rawChest).replace(/\D+/g, '');
+  if (digits) return { num: Number(digits), str: String(rawChest).toLowerCase() };
+  return { num: Number.MAX_SAFE_INTEGER, str: String(rawChest).toLowerCase() };
+};
+
+const compareChest = (a, b) => {
+  const ka = chestSortKey(a);
+  const kb = chestSortKey(b);
+  if (ka.num !== kb.num) return ka.num - kb.num;
+  return ka.str.localeCompare(kb.str);
+};
 
 function getLoggedInUser() {
   try {
-    return JSON.parse(localStorage.getItem('fest_user'));
+    return JSON.parse(
+      sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user') || 'null'
+    );
   } catch {
     return null;
   }
 }
 
 async function getList(name, allowMissing = false) {
-  const res = await fetch(`${API_BASE}/${name}`);
+  const res = await fetch(`${API_BASE}/${name}`, { headers: authHeaders() });
   if (allowMissing && res.status === 404) return [];
   if (!res.ok) throw new Error(`Could not load ${name}.`);
   return res.json();
@@ -49,7 +71,13 @@ export default function JudgeDashboard() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  const loadAll = async () => {
+  const [showWelcome, setShowWelcome] = useState(() => {
+    const flag = sessionStorage.getItem('fest_just_logged_in') === '1';
+    if (flag) sessionStorage.removeItem('fest_just_logged_in');
+    return flag;
+  });
+
+  const loadAll = useCallback(async () => {
     try {
       const [f, p, r, s] = await Promise.all([
         getList('fests'),
@@ -57,44 +85,85 @@ export default function JudgeDashboard() {
         getList('registrations'),
         getList('results', true),
       ]);
-      setFests(f);
-      setPrograms(p);
-      setRegistrations(r);
-      setResults(s);
+      setFests(Array.isArray(f) ? f : []);
+      setPrograms(Array.isArray(p) ? p : []);
+      setRegistrations(Array.isArray(r) ? r : []);
+      setResults(Array.isArray(s) ? s : []);
       setError('');
     } catch (err) {
       setError(err.message || 'Could not load data. Is the server running?');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [loadAll]);
 
-  const isJudge = user && user.role === 'judge';
+  const isJudge = Boolean(user);
 
-  // Programs of fests the admin has published.
-  // If a program lists judgeIds, only those judges see it.
-  const myPrograms = useMemo(() => {
-    const publishedIds = fests.filter((f) => f.published).map((f) => String(f.id));
-    return programs.filter((p) => {
-      if (!publishedIds.includes(String(p.festId))) return false;
-      if (Array.isArray(p.judgeIds) && p.judgeIds.length > 0) {
-        return p.judgeIds.includes(user?.id);
+  const festById = useMemo(
+    () => new Map(fests.map((f) => [String(f.id), f])),
+    [fests]
+  );
+
+  const contestantsFor = useCallback(
+    (programId) =>
+      registrations
+        .filter(
+          (r) =>
+            String(r.programId) === String(programId) && r.status === 'Forwarded to Admin'
+        )
+        .sort(compareChest),
+    [registrations]
+  );
+
+  const meetsMinimumThreshold = useCallback(
+    (program) => {
+      const parentFest = festById.get(String(program.festId));
+      const isSchool = parentFest?.mode === 'School';
+      const entries = contestantsFor(program.id);
+
+      if (isSchool) {
+        const names = new Set(
+          entries.map((r) => String(r.studentName || r.name || '').trim()).filter(Boolean)
+        );
+        const participantCount = names.size > 0 ? names.size : entries.length;
+        return participantCount >= MIN_REQUIRED;
       }
-      return true;
-    });
-  }, [fests, programs, user]);
 
-  const contestantsFor = (programId) =>
-    registrations.filter(
-      (r) => String(r.programId) === String(programId) && r.status === 'Forwarded to Admin'
+      const depts = new Set(
+        entries
+          .map((r) => r.deptKey || normKey(r.department))
+          .filter(Boolean)
+      );
+      return depts.size >= MIN_REQUIRED;
+    },
+    [festById, contestantsFor]
+  );
+
+  // Programs of fests the admin has published that also meet the minimum participation rule.
+  // If a program lists judgeIds, only those judges see it; otherwise all eligible published programs are shown.
+  const myPrograms = useMemo(() => {
+    const publishedIds = new Set(
+      fests.filter((f) => f.published).map((f) => String(f.id))
     );
+    return programs.filter((p) => {
+      if (!publishedIds.has(String(p.festId))) return false;
+      if (Array.isArray(p.judgeIds) && p.judgeIds.length > 0 && user?.role === 'judge') {
+        if (!p.judgeIds.some((jid) => String(jid) === String(user?.id))) return false;
+      }
+      return meetsMinimumThreshold(p);
+    });
+  }, [fests, programs, user, meetsMinimumThreshold]);
 
   const savedResultFor = (registrationId) =>
-    results.find((x) => x.registrationId === registrationId && x.judgeId === user?.id);
+    results.find(
+      (x) =>
+        String(x.registrationId) === String(registrationId) &&
+        (!x.judgeId || String(x.judgeId) === String(user?.id))
+    );
 
   const statusOf = (program) => {
     const list = contestantsFor(program.id);
@@ -103,7 +172,8 @@ export default function JudgeDashboard() {
     return allDone ? 'Completed' : 'Pending Evaluation';
   };
 
-  const selected = myPrograms.find((p) => String(p.id) === String(selectedId)) || myPrograms[0] || null;
+  const selected =
+    myPrograms.find((p) => String(p.id) === String(selectedId)) || myPrograms[0] || null;
   const contestants = selected ? contestantsFor(selected.id) : [];
 
   const completedCount = myPrograms.filter((p) => statusOf(p) === 'Completed').length;
@@ -169,7 +239,10 @@ export default function JudgeDashboard() {
           existing ? `${API_BASE}/results/${existing.id}` : `${API_BASE}/results`,
           {
             method: existing ? 'PATCH' : 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
             body: JSON.stringify(body),
           }
         );
@@ -193,7 +266,7 @@ export default function JudgeDashboard() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F5F8F8] p-6 font-['DM_Sans']">
         <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-sm text-center shadow-sm">
-          <p className="text-slate-700 mb-4">Please sign in with a judge account to see this page.</p>
+          <p className="text-slate-700 mb-4">Please sign in to see this page.</p>
           <Link to="/login" className="font-bold text-[#0B3F46] hover:underline">
             Go to sign in
           </Link>
@@ -202,8 +275,44 @@ export default function JudgeDashboard() {
     );
   }
 
+  if (showWelcome) {
+    return (
+      <PostLoginWelcome
+        user={user}
+        roleLabel="Judge Committee"
+        message={`You have ${myPrograms.length} eligible ${myPrograms.length === 1 ? 'program' : 'programs'} ready for marks and rank entry.`}
+        onEnterDashboard={() => setShowWelcome(false)}
+        highlights={[
+          {
+            title: 'Scorecard & Markings',
+            description: `${myPrograms.length} programs meeting minimum participation.`,
+            icon: ClipboardList,
+            onClick: () => setShowWelcome(false),
+          },
+          {
+            title: 'Waiting for Marks',
+            description: `${pendingCount} ${pendingCount === 1 ? 'program' : 'programs'} pending evaluation.`,
+            icon: Clock,
+            onClick: () => setShowWelcome(false),
+          },
+          {
+            title: 'Submitted',
+            description: `${completedCount} ${completedCount === 1 ? 'program' : 'programs'} completed.`,
+            icon: CheckCircle2,
+            onClick: () => setShowWelcome(false),
+          },
+        ]}
+      />
+    );
+  }
+
   const allLocked =
     contestants.length > 0 && contestants.every((c) => savedResultFor(c.id)?.status === 'submitted');
+
+  const clearSession = () => {
+    sessionStorage.removeItem('fest_user');
+    localStorage.removeItem('fest_user');
+  };
 
   return (
     <div className="min-h-screen flex bg-[#F5F8F8] text-slate-800 font-['DM_Sans']">
@@ -217,14 +326,16 @@ export default function JudgeDashboard() {
             </div>
             <div>
               <h2 className="text-xl font-extrabold font-['Bricolage_Grotesque']">CampusFest</h2>
-              <p className="text-[10px] text-[#F5A623] uppercase tracking-[2px] font-bold">Judge Committee</p>
+              <p className="text-[10px] text-[#F5A623] uppercase tracking-[2px] font-bold">
+                Judge Committee
+              </p>
             </div>
           </Link>
 
           <nav className="space-y-2">
             <div className="w-full flex items-center gap-3 py-3 px-4 rounded-xl text-sm font-bold bg-[#F5A623] text-[#072C31] shadow-lg">
               <ClipboardList size={17} />
-              Scorecard & Markings
+              Scorecard &amp; Markings
             </div>
           </nav>
 
@@ -234,7 +345,7 @@ export default function JudgeDashboard() {
               <span className="text-xs font-bold">{user.name}</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Enter marks and ranks, then submit them to the Fest Committee.
+              School events require at least 3 participants; college events require at least 3 departments.
             </p>
           </div>
         </div>
@@ -242,7 +353,7 @@ export default function JudgeDashboard() {
         <div className="pt-6 border-t border-white/10">
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="flex items-center gap-2 text-xs text-slate-400 hover:text-[#F5A623] font-semibold transition"
           >
             <ArrowLeft size={15} />
@@ -258,7 +369,7 @@ export default function JudgeDashboard() {
               Judge Dashboard
             </h1>
             <p className="text-slate-500 text-sm mt-1">
-              Programs appear here once the admin publishes the fest.
+              Published programs meeting the minimum participation rule appear here.
             </p>
           </div>
           <Link
@@ -271,19 +382,25 @@ export default function JudgeDashboard() {
         </header>
 
         {error && (
-          <div role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <div
+            role="alert"
+            className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+          >
             {error}
           </div>
         )}
         {message && (
-          <div role="status" className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <div
+            role="status"
+            className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+          >
             {message}
           </div>
         )}
 
         <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <p className="text-xs font-bold text-slate-500 mb-2">Programs for you</p>
+            <p className="text-xs font-bold text-slate-500 mb-2">Eligible programs</p>
             <h3 className="text-3xl font-extrabold text-[#0B3F46] font-['Bricolage_Grotesque']">
               {myPrograms.length}
             </h3>
@@ -292,13 +409,17 @@ export default function JudgeDashboard() {
             <p className="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1.5">
               <Clock size={14} /> Waiting for your marks
             </p>
-            <h3 className="text-3xl font-extrabold text-[#B7791F] font-['Bricolage_Grotesque']">{pendingCount}</h3>
+            <h3 className="text-3xl font-extrabold text-[#B7791F] font-['Bricolage_Grotesque']">
+              {pendingCount}
+            </h3>
           </div>
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
             <p className="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1.5">
               <CheckCircle2 size={14} /> Submitted
             </p>
-            <h3 className="text-3xl font-extrabold text-emerald-600 font-['Bricolage_Grotesque']">{completedCount}</h3>
+            <h3 className="text-3xl font-extrabold text-emerald-600 font-['Bricolage_Grotesque']">
+              {completedCount}
+            </h3>
           </div>
         </section>
 
@@ -306,7 +427,7 @@ export default function JudgeDashboard() {
           <p className="text-sm text-slate-500">Loading programs...</p>
         ) : myPrograms.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-3xl p-8 text-sm text-slate-600">
-            No programs yet. They appear here after the admin publishes the fest.
+            No eligible programs yet. A school program needs at least 3 participants, and a college program needs at least 3 departments, after the fest is published.
           </div>
         ) : (
           <div className="space-y-8">
@@ -331,7 +452,9 @@ export default function JudgeDashboard() {
                         setError('');
                       }}
                       className={`text-left bg-[#F5F8F8] border p-5 rounded-2xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 transition ${
-                        active ? 'border-[#F5A623] ring-2 ring-[#F5A623]/20' : 'border-slate-200 hover:border-[#F5A623]'
+                        active
+                          ? 'border-[#F5A623] ring-2 ring-[#F5A623]/20'
+                          : 'border-slate-200 hover:border-[#F5A623]'
                       }`}
                     >
                       <div>
@@ -385,11 +508,15 @@ export default function JudgeDashboard() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-sm">
-                          {contestants.map((c) => {
+                          {contestants.map((c, idx) => {
                             const locked = savedResultFor(c.id)?.status === 'submitted';
+                            const displayChest =
+                              c.chestNo ?? c.chestNumber ?? String(idx + 1).padStart(2, '0');
                             return (
                               <tr key={c.id}>
-                                <td className="p-4 font-mono text-[#D6336C] font-bold">C-{String(c.id).padStart(2, '0')}</td>
+                                <td className="p-4 font-mono text-[#D6336C] font-bold">
+                                  C-{String(displayChest).replace(/^C-/i, '').padStart(2, '0')}
+                                </td>
                                 <td className="p-4 font-bold text-[#0B3F46]">
                                   {c.studentName}
                                   <span className="block text-xs font-normal text-slate-500">

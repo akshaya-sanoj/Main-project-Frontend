@@ -9,7 +9,7 @@ import RegisterPage from './components/RegisterPage';
 
 // Dashboards & Portals
 import AdminDashboard from './admin/pages/AdminDashboard';
-import FestRosterDetail from './admin/pages/FestRosterDetail';
+import FestListDetail from './admin/pages/FestListDetail';
 import CoordinatorDashboard from './coordinator/pages/CoordinatorDashboard';
 import TeacherDashboard from './teacher/pages/TeacherDashboard';
 import StudentDashboard from './student/pages/StudentDashboard';
@@ -34,7 +34,7 @@ export default function App() {
 
           {/* Admin Routes (No ID required for Super Admin) */}
           <Route path="/admin" element={<AdminDashboard />} />
-          <Route path="/admin/submissions/:festId" element={<FestRosterDetail />} />
+          <Route path="/admin/submissions/:festId" element={<FestListDetail />} />
 
           {/* Parameterized Role Dashboards */}
           <Route path="/coordinator/:id" element={<CoordinatorDashboard />} />

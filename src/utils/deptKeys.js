@@ -33,6 +33,6 @@ export const normalizeDept = (d) => {
   return encodeURIComponent(raw);
 };
 
-export const rosterKey = (d) => `coord_pending_rosters_${normalizeDept(d)}`;
+export const ListKey = (d) => `coord_pending_Lists_${normalizeDept(d)}`;
 export const adminSubmittedKey = (d) => `coord_submitted_to_admin_${normalizeDept(d)}`;
 export const adminSubmissionsKey = (d) => `admin_department_submissions_${normalizeDept(d)}`;export const fundSubmissionsKey = (dept) => `coord_fund_submissions_${normalizeDept(dept)}`;

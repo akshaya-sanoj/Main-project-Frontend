@@ -29,7 +29,7 @@ export default function SubmissionsTab({
 
       {myFests.length === 0 ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
-          You have not been appointed as coordinator for any fest yet, so there are no rosters to show.
+          You have not been appointed as coordinator for any fest yet, so there are no Lists to show.
         </p>
       ) : (
         <section className={`${cardStyle} p-5`}>
@@ -58,7 +58,7 @@ export default function SubmissionsTab({
         <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <h2 className="fest-display text-lg font-bold text-[#0B3F46]">
-              Submitted Teacher Rosters ({dept}){selectedFest ? ` · ${selectedFest.name}` : ''}
+              Submitted Teacher Lists ({dept}){selectedFest ? ` · ${selectedFest.name}` : ''}
             </h2>
             <p className="mt-1 text-xs text-slate-500">Review student lists sent by your teachers, then forward them to the Admin.</p>
           </div>
@@ -95,7 +95,7 @@ export default function SubmissionsTab({
         )}
 
         {teacherSubmissions.length === 0 ? (
-          <p className="py-8 text-center text-xs text-slate-400">No teacher rosters have been submitted to your department for this fest yet.</p>
+          <p className="py-8 text-center text-xs text-slate-400">No teacher Lists have been submitted to your department for this fest yet.</p>
         ) : (
           <div className="space-y-4">
             {teacherSubmissions.map((sub, idx) => (

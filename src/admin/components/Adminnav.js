@@ -6,6 +6,7 @@ import {
   UserCheck,
   Send,
   DollarSign,
+  Scale
 } from 'lucide-react';
 
 // Change this if your admin dashboard lives on a different route

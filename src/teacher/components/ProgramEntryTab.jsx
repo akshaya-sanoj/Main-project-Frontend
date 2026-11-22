@@ -21,7 +21,7 @@ export default function ProgramEntryTab({
   isGroupEvent,
   handleAddParticipant,
   regBusy,
-  handleSubmitRoster,
+  handleSubmitList,
   participants = [],
   pendingCount,
   forwardedCount,
@@ -149,22 +149,22 @@ export default function ProgramEntryTab({
         </form>
       </section>
 
-      {/* Participants Roster */}
+      {/* Participants List */}
       <section className="bg-white border border-[#E4ECEC] rounded-3xl shadow-sm overflow-hidden mb-8">
         <div className="p-5 sm:p-6 border-b border-[#E4ECEC] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <h2 className="text-lg font-extrabold text-[#0B3F46]">Registered Participants Roster</h2>
+            <h2 className="text-lg font-extrabold text-[#0B3F46]">Registered Participants List</h2>
             <p className="text-xs text-[#718589] mt-1">Review participant information and submission status.</p>
           </div>
 
           <button
             type="button"
-            onClick={handleSubmitRoster}
+            onClick={handleSubmitList}
             disabled={regBusy || participants.length === 0 || pendingCount === 0}
             className="inline-flex items-center justify-center gap-2 bg-[#0B3F46] hover:bg-[#0B6870] disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 rounded-xl text-xs font-bold transition shadow-sm"
           >
             <Send size={16} />
-            Submit Rosters to Coordinator
+            Submit Lists to Coordinator
           </button>
         </div>
 

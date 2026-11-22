@@ -1,1 +1,41 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..800;1,9..40,400..800&family=Plus+Jakarta+Sans:wght@700;800&display=swap');
+
+.fest-display {
+  font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
+  letter-spacing: -0.02em;
+}
+
+@keyframes festFadeUp {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes festFloatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.animate-fest-up {
+  opacity: 0;
+  animation: festFadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-fest-delay-1 { animation-delay: 80ms; }
+.animate-fest-delay-2 { animation-delay: 160ms; }
+.animate-fest-delay-3 { animation-delay: 240ms; }
+.animate-fest-delay-4 { animation-delay: 320ms; }
+
+.animate-fest-float {
+  animation: festFloatSlow 4s ease-in-out infinite;
+}

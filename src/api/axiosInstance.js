@@ -13,7 +13,7 @@ const API = axios.create({
 // Optional: Add a request interceptor to attach user info if needed
 API.interceptors.request.use(
   (config) => {
-    const user = localStorage.getItem('fest_user');
+    const user = (sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user'));
     if (user) {
       // You can pass custom headers if your backend requires them
       // config.headers['X-User-Role'] = JSON.parse(user).role;

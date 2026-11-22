@@ -50,7 +50,7 @@ export default function Sidebar({ navItems, activeTab, setActiveTab, setTeacherE
       <div className="border-t border-white/10 pt-5">
         <Link
           to="/login"
-          onClick={() => localStorage.removeItem('fest_user')}
+          onClick={() => onClick={() => { sessionStorage.removeItem('fest_user'); localStorage.removeItem('fest_user'); }}}
           className="text-sm font-semibold text-[#F5A623] hover:text-white"
         >
           ← Sign Out

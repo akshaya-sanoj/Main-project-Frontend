@@ -1,22 +1,25 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { normalizeDept } from '../../utils/deptKeys';
-import { API_BASE } from '../../services/api';
+import { API_BASE, authHeaders } from '../../services/api';
 import { Link } from 'react-router-dom';
-import { useDepartmentStorage } from '../../hooks/useDepartmentStorage';
 import Coordinatorlayout from '../components/Coordinatorlayout';
 import TeachersTab from '../components/TeachersTab';
 import FundsTab from '../components/FundsTab';
 import ClassListsTab from '../components/ClassListsTab';
-import StudentApprovalsTab from '../components/StudentApprovalsTab';
 import VolunteersTab from '../components/VolunteersTab';
 import SubmissionsTab from '../components/SubmissionsTab';
+import Photo from '../../components/Photo';
 
 async function request(path, options = {}) {
   let res;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
       ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+        ...(options.headers || {}),
+      },
     });
   } catch {
     throw new Error(`Cannot reach the server at ${API_BASE}. Is it running?`);
@@ -26,7 +29,7 @@ async function request(path, options = {}) {
     if (res.status === 404 && isList) {
       throw new Error('The server has no list for this yet. Check that db.json has "fests", "programs", "sections", "deptFunds", "payments", "registrations", "classLists" and "staffLists", then restart it.');
     }
-    throw new Error(res.status === 404 ? 'That item was not found. It may have been removed.' : 'The server could not save that. Please try again.');
+    throw new Error(res.status === 404 ? 'That item was not found. It may already have been removed.' : 'The server could not save that. Please try again.');
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -40,15 +43,23 @@ export default function CoordinatorDashboard() {
   const [coordinator, setCoordinator] = useState(null);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('fest_user');
+    const savedUser = (sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user'));
     if (savedUser) {
       try {
         const parsed = JSON.parse(savedUser);
         setCoordinator(parsed);
         if (parsed.id) {
-          fetch(`${API_BASE}/users/${parsed.id}`)
+          fetch(`${API_BASE}/users/${parsed.id}`, { headers: authHeaders() })
             .then((res) => (res.ok ? res.json() : null))
-            .then((fresh) => fresh && setCoordinator(fresh))
+            .then((fresh) => {
+              if (fresh) {
+                setCoordinator((prev) => ({
+                  ...prev,
+                  ...fresh,
+                  token: fresh.token || parsed.token || prev?.token,
+                }));
+              }
+            })
             .catch(() => {});
         }
       } catch (error) {
@@ -67,6 +78,7 @@ export default function CoordinatorDashboard() {
   const [selectedFestId, setSelectedFestId] = useState('');
   const [deptFunds, setDeptFunds] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [fundRemittances, setFundRemittances] = useState([]);
   const [registrations, setRegistrations] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [teacherError, setTeacherError] = useState('');
@@ -80,10 +92,12 @@ export default function CoordinatorDashboard() {
   const [staffLists, setStaffLists] = useState([]);
   const [classLists, setClassLists] = useState([]);
 
+  const [selectedVolStudentId, setSelectedVolStudentId] = useState('');
+  const [volRole, setVolRole] = useState('');
+
   const loadAll = useCallback(async () => {
-    // The lists below are optional so the page still opens if they are not in db.json yet
     const optional = (path) => request(path).catch(() => []);
-    const [u, f, p, sec, df, pay, regs, staff, lists] = await Promise.all([
+    const [u, f, p, sec, df, pay, regs, staff, lists, rems] = await Promise.all([
       request('/users'),
       request('/fests'),
       request('/programs'),
@@ -93,6 +107,7 @@ export default function CoordinatorDashboard() {
       optional('/registrations'),
       optional('/staffLists'),
       optional('/classLists'),
+      optional('/fundRemittances'),
     ]);
     setUsers(Array.isArray(u) ? u : []);
     setFests(Array.isArray(f) ? f : []);
@@ -103,13 +118,13 @@ export default function CoordinatorDashboard() {
     setRegistrations(Array.isArray(regs) ? regs : []);
     setStaffLists(Array.isArray(staff) ? staff : []);
     setClassLists(Array.isArray(lists) ? lists : []);
+    setFundRemittances(Array.isArray(rems) ? rems : []);
   }, []);
 
   useEffect(() => {
     loadAll().then(() => setLoadError('')).catch((e) => setLoadError(e.message));
   }, [loadAll]);
 
-  // Keep the page fresh: reload when the window regains focus and every 15 seconds
   useEffect(() => {
     const refresh = () => { loadAll().catch(() => {}); };
     window.addEventListener('focus', refresh);
@@ -120,7 +135,6 @@ export default function CoordinatorDashboard() {
     };
   }, [loadAll]);
 
-  // Runs a save, reloads the data, and shows either a notice or the error
   const run = async (fn, successMessage) => {
     setBusy(true);
     setTeacherError('');
@@ -144,11 +158,16 @@ export default function CoordinatorDashboard() {
   };
 
   const deptTeachers = users.filter(
-    (u) => u.baseType === 'teacher' && u.approved !== false && !u.rejected && (u.staffId || u.email) && normalizeDept(u.department || '') === deptKey
+    (u) =>
+      u.baseType === 'teacher' &&
+      u.approved !== false &&
+      !u.rejected &&
+      (u.staffId || u.email) &&
+      u.role !== 'dept_coordinator' &&
+      !(u.duties || []).includes('dept_coordinator') &&
+      normalizeDept(u.department || '') === deptKey
   );
 
-  // The fests this coordinator was appointed to by the admin.
-  // Older coordinators without a festIds list still see every fest until the admin links them.
   const myFestIds = Array.isArray(coordinator?.festIds) && coordinator.festIds.length > 0 ? coordinator.festIds : null;
   const myFests = fests.filter((f) => !myFestIds || myFestIds.some((id) => sameId(id, f.id)));
   const myFestKey = myFests.map((f) => f.id).join(',');
@@ -165,7 +184,6 @@ export default function CoordinatorDashboard() {
   const programsOfTeacher = (teacherId) => publishedPrograms.filter((p) => ((p.assignments || {})[deptKey] || []).some((id) => sameId(id, teacherId)));
   const isClassTeacher = (u) => (u.duties || []).includes('class_teacher') && !!u.classSection;
 
-  // ---------- Classes and students of this department ----------
   const deptSections = sections.filter((s) => s.deptKey === deptKey);
   const allDeptStudents = users.filter((u) => u.baseType === 'student' && !u.rejected && normalizeDept(u.department || '') === deptKey);
   const deptStudents = allDeptStudents.filter((u) => u.approved !== false);
@@ -173,7 +191,6 @@ export default function CoordinatorDashboard() {
   const takenSections = deptTeachers.filter(isClassTeacher).map((t) => t.classSection);
   const freeSections = deptSections.filter((sec) => !takenSections.includes(sec.name));
 
-  // ---------- Class teachers ----------
   const handleSetClassTeacher = async (teacher) => {
     const section = (classInputs[teacher.id] || '').trim();
     if (section.length < 2) {
@@ -208,7 +225,6 @@ export default function CoordinatorDashboard() {
     );
   };
 
-  // ---------- Program duties ----------
   const handleAssignProgram = async (teacher) => {
     const programId = programPick[teacher.id];
     if (!programId) {
@@ -237,7 +253,6 @@ export default function CoordinatorDashboard() {
     );
   };
 
-  // ---------- Participant rosters ----------
   const deptRegistrations = registrations.filter(
     (r) => r.deptKey === deptKey && selectedFest && sameId(r.festId, selectedFest.id) && r.status !== 'Pending Submission'
   );
@@ -271,7 +286,6 @@ export default function CoordinatorDashboard() {
     );
   };
 
-  // ---------- Fest fund (per fest) ----------
   const deptFund = (selectedFest && deptFunds.find((f) => f.deptKey === deptKey && sameId(f.festId, selectedFest.id))) || null;
 
   const paidPaymentOf = (studentId) =>
@@ -281,10 +295,27 @@ export default function CoordinatorDashboard() {
     const students = deptStudents.filter((u) => u.classSection === sec.name);
     const paidList = students.filter((u) => paidPaymentOf(u.id));
     const collected = paidList.reduce((sum, u) => sum + (Number(paidPaymentOf(u.id).amount) || 0), 0);
-    return { total: students.length, paid: paidList.length, collected };
+    const remittance =
+      selectedFest &&
+      fundRemittances.find(
+        (r) => sameId(r.festId, selectedFest.id) && r.deptKey === deptKey && r.classSection === sec.name
+      );
+    return { total: students.length, paid: paidList.length, collected, remittance: remittance || null };
   };
 
   const totalCollected = deptSections.reduce((sum, sec) => sum + sectionStats(sec).collected, 0);
+
+  const handleVerifyRemittance = async (rem) => {
+    if (!rem?.id) return;
+    await run(
+      () =>
+        request(
+          `/fundRemittances/${rem.id}`,
+          send('PATCH', { status: 'verified', verifiedAt: new Date().toISOString() })
+        ),
+      `Verified ₹${Number(rem.amount).toLocaleString('en-IN')} received from ${rem.classSection}.`
+    );
+  };
 
   const handleSaveFund = async (e) => {
     e.preventDefault();
@@ -332,24 +363,71 @@ export default function CoordinatorDashboard() {
     await run(() => request(`/sections/${sec.id}`, { method: 'DELETE' }), 'Class deleted.');
   };
 
-  // ---------- Volunteers (kept in this browser) ----------
-  const volunteersKey = `coord_volunteers_${deptKey}`;
-  const [volunteers, setVolunteers] = useDepartmentStorage(volunteersKey, [{ id: 201, name: 'Ananya S.', role: 'Stage Assistance', classSection: `3rd Year ${dept}` }]);
-  const [volName, setVolName] = useState('');
-  const [volRole, setVolRole] = useState('');
-  const [volClass, setVolClass] = useState('');
+  // ---------- Contribute Students to Volunteer Committee ----------
+  const deptCommitteeStudents = deptStudents.filter((u) => Boolean(u.volunteerCommittee));
 
-  const handleAddVolunteer = (e) => {
+  const handleContributeVolunteer = async (e) => {
     e.preventDefault();
-    if (!volName.trim() || !volRole.trim() || !volClass.trim()) return;
-    setVolunteers((prev) => [...prev, { id: Date.now(), name: volName.trim(), role: volRole.trim(), classSection: volClass.trim() }]);
-    setVolName(''); setVolRole(''); setVolClass('');
+    if (!selectedVolStudentId) {
+      fail('Choose a student from your department first.');
+      return;
+    }
+    const stu = deptStudents.find((s) => sameId(s.id, selectedVolStudentId));
+    if (!stu) return;
+
+    const prevFests = Array.isArray(stu.volunteerFestIds) ? stu.volunteerFestIds : [];
+    const nextFests =
+      selectedFest && !prevFests.some((id) => sameId(id, selectedFest.id))
+        ? [...prevFests, selectedFest.id]
+        : prevFests;
+    const nextDuties = Array.from(new Set([...(stu.duties || []), 'volunteer_committee']));
+
+    const ok = await run(
+      () =>
+        request(
+          `/users/${stu.id}`,
+          send('PATCH', {
+            volunteerCommittee: true,
+            volunteerFestIds: nextFests,
+            volunteerDept: dept,
+            volunteerNote: volRole.trim(),
+            volunteerContributedBy: coordinator?.name || 'Department Coordinator',
+            duties: nextDuties,
+          })
+        ),
+      `${stu.name} added to the Volunteer Committee for ${dept}.`
+    );
+    if (ok) {
+      setSelectedVolStudentId('');
+      setVolRole('');
+    }
   };
 
-  const handleDeleteVolunteer = (id) => setVolunteers((prev) => prev.filter((v) => v.id !== id));
+  const handleRemoveVolunteer = async (stu) => {
+    const prevFests = Array.isArray(stu.volunteerFestIds) ? stu.volunteerFestIds : [];
+    const remainingFests = selectedFest
+      ? prevFests.filter((id) => !sameId(id, selectedFest.id))
+      : [];
+    const stillActive = remainingFests.length > 0;
+    const nextDuties = stillActive
+      ? stu.duties || []
+      : (stu.duties || []).filter((d) => d !== 'volunteer_committee');
 
-  // Students of this department waiting for approval, for the sidebar badge.
-  // Uses the same department matching as everything else (not an exact text comparison).
+    await run(
+      () =>
+        request(
+          `/users/${stu.id}`,
+          send('PATCH', {
+            volunteerCommittee: stillActive,
+            volunteerFestIds: remainingFests,
+            ...(!stillActive ? { volunteerDept: '', volunteerNote: '', volunteerContributedBy: '' } : {}),
+            duties: nextDuties,
+          })
+        ),
+      `${stu.name} removed from the Volunteer Committee.`
+    );
+  };
+
   const pendingApprovalsCount = allDeptStudents.filter((u) => u.approved === false).length;
 
   const badges = {
@@ -373,9 +451,11 @@ export default function CoordinatorDashboard() {
       coordinator={coordinator}
       dept={dept}
     >
-      <header className="mb-8 flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-center">
-        <div>
-          <h1 className="fest-display text-2xl font-extrabold text-[#0B3F46] sm:text-3xl">
+      <header className="relative mb-8 overflow-hidden rounded-2xl bg-[#0B3F46] text-white shadow-sm">
+        <Photo src="/banner.png" alt="" eager className="absolute inset-0 h-full w-full" />
+        <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-r from-[#0B3F46] via-[#0B3F46]/80 to-[#0B3F46]/20" />
+        <div className="relative z-10 flex flex-col justify-between gap-4 px-6 py-8 sm:flex-row sm:items-center sm:px-8 sm:py-10">
+          <h1 className="fest-display text-2xl font-extrabold sm:text-3xl">
             {activeTab === 'teachers' && `My Teachers (${dept})`}
             {activeTab === 'funds' && `Classes & Fund (${dept})`}
             {activeTab === 'classLists' && `Class Lists (${dept})`}
@@ -383,10 +463,10 @@ export default function CoordinatorDashboard() {
             {activeTab === 'volunteers' && `Department Volunteers (${dept})`}
             {activeTab === 'submissions' && `Submissions to Admin (${dept})`}
           </h1>
+          <Link to="/" className="self-start rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/20 sm:self-auto">
+            ← Back to Home
+          </Link>
         </div>
-        <Link to="/" className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-[#0B3F46] hover:bg-[#FFF8E9]">
-          ← Back to Home
-        </Link>
       </header>
 
       {activeTab === 'teachers' && (
@@ -405,17 +485,100 @@ export default function CoordinatorDashboard() {
       )}
 
       {activeTab === 'funds' && (
-        <FundsTab
-          teacherNotice={teacherNotice} teacherError={teacherError} loadError={loadError}
-          myFests={myFests} selectedFestId={selectedFestId} setSelectedFestId={setSelectedFestId}
-          setProgramPick={setProgramPick} setFundInput={setFundInput} setTeacherError={setTeacherError}
-          setTeacherNotice={setTeacherNotice} selectedFest={selectedFest} deptFund={deptFund}
-          fundInput={fundInput} handleSaveFund={handleSaveFund} totalCollected={totalCollected}
-          sectionInput={sectionInput} setSectionInput={setSectionInput} handleAddSection={handleAddSection}
-          deptSections={deptSections} sectionStats={sectionStats} classTeacherOfSection={classTeacherOfSection}
-          handleDeleteSection={handleDeleteSection} busy={busy} dept={dept} cardStyle={cardStyle}
-          inputStyle={inputStyle} smallButton={smallButton}
-        />
+        <div className="space-y-6">
+          {selectedFest && (
+            <section className={`${cardStyle} overflow-hidden`}>
+              <div className="flex flex-col justify-between gap-2 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:px-6">
+                <div>
+                  <h2 className="fest-display text-base font-bold text-[#0B3F46]">
+                    Class-wise Fee Paid & Remittances · {selectedFest.name}
+                  </h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Number of students paid from each class and amounts sent by class teachers.
+                  </p>
+                </div>
+                <span className="self-start rounded-full bg-[#E6F1F2] px-3 py-1 text-xs font-bold text-[#0B3F46] sm:self-auto">
+                  Total Collected: ₹{totalCollected.toLocaleString('en-IN')}
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-left text-sm">
+                  <thead>
+                    <tr className="bg-[#F5F8F8] text-[11px] uppercase tracking-wider text-slate-500">
+                      <th className="p-3.5">Class</th>
+                      <th className="p-3.5">Students Paid</th>
+                      <th className="p-3.5">Collected</th>
+                      <th className="p-3.5">Class Teacher Remittance</th>
+                      <th className="p-3.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {deptSections.map((sec) => {
+                      const st = sectionStats(sec);
+                      return (
+                        <tr key={sec.id} className="hover:bg-[#F5F8F8]">
+                          <td className="p-3.5 font-semibold text-[#0B3F46]">{sec.name}</td>
+                          <td className="p-3.5 font-semibold text-slate-800">
+                            {st.paid} / {st.total} paid
+                          </td>
+                          <td className="p-3.5 font-bold text-[#0B3F46]">
+                            ₹{st.collected.toLocaleString('en-IN')}
+                          </td>
+                          <td className="p-3.5">
+                            {!st.remittance ? (
+                              <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-500">
+                                Not sent yet
+                              </span>
+                            ) : st.remittance.status === 'verified' ? (
+                              <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700">
+                                Verified · ₹{Number(st.remittance.amount).toLocaleString('en-IN')}
+                              </span>
+                            ) : (
+                              <span className="rounded-full bg-amber-50 px-2.5 py-1 font-semibold text-amber-800">
+                                Sent by {st.remittance.teacherName || 'Teacher'} · ₹{Number(st.remittance.amount).toLocaleString('en-IN')}
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3.5 text-right">
+                            {st.remittance && st.remittance.status !== 'verified' && (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => handleVerifyRemittance(st.remittance)}
+                                className="rounded-lg bg-[#0B3F46] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0E4D55] disabled:opacity-50"
+                              >
+                                Verify Received
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {deptSections.length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="p-6 text-center text-slate-500">
+                          No classes added for {dept} yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          <FundsTab
+            teacherNotice={teacherNotice} teacherError={teacherError} loadError={loadError}
+            myFests={myFests} selectedFestId={selectedFestId} setSelectedFestId={setSelectedFestId}
+            setProgramPick={setProgramPick} setFundInput={setFundInput} setTeacherError={setTeacherError}
+            setTeacherNotice={setTeacherNotice} selectedFest={selectedFest} deptFund={deptFund}
+            fundInput={fundInput} handleSaveFund={handleSaveFund} totalCollected={totalCollected}
+            sectionInput={sectionInput} setSectionInput={setSectionInput} handleAddSection={handleAddSection}
+            deptSections={deptSections} sectionStats={sectionStats} classTeacherOfSection={classTeacherOfSection}
+            handleDeleteSection={handleDeleteSection} busy={busy} dept={dept} cardStyle={cardStyle}
+            inputStyle={inputStyle} smallButton={smallButton}
+          />
+        </div>
       )}
 
       {activeTab === 'classLists' && (
@@ -438,10 +601,22 @@ export default function CoordinatorDashboard() {
 
       {activeTab === 'volunteers' && (
         <VolunteersTab
-          volunteers={volunteers} volName={volName} setVolName={setVolName}
-          volRole={volRole} setVolRole={setVolRole} volClass={volClass} setVolClass={setVolClass}
-          handleAddVolunteer={handleAddVolunteer} handleDeleteVolunteer={handleDeleteVolunteer}
-          dept={dept} cardStyle={cardStyle} inputStyle={inputStyle} primaryButton={primaryButton}
+          teacherNotice={teacherNotice}
+          teacherError={teacherError}
+          loadError={loadError}
+          deptStudents={deptStudents}
+          committeeStudents={deptCommitteeStudents}
+          selectedStudentId={selectedVolStudentId}
+          setSelectedStudentId={setSelectedVolStudentId}
+          volRole={volRole}
+          setVolRole={setVolRole}
+          handleContributeVolunteer={handleContributeVolunteer}
+          handleRemoveVolunteer={handleRemoveVolunteer}
+          busy={busy}
+          dept={dept}
+          cardStyle={cardStyle}
+          inputStyle={inputStyle}
+          primaryButton={primaryButton}
         />
       )}
 

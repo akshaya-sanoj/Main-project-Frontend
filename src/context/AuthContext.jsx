@@ -10,11 +10,12 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('fest_user');
+    const savedUser = sessionStorage.getItem('fest_user') || localStorage.getItem('fest_user');
     if (savedUser) {
       try {
         setUser(JSON.parse(savedUser));
-      } catch (e) {
+      } catch {
+        sessionStorage.removeItem('fest_user');
         localStorage.removeItem('fest_user');
       }
     }
@@ -26,8 +27,8 @@ export function AuthProvider({ children }) {
     try {
       const loggedInUser = await loginUser(credentials);
       setUser(loggedInUser);
-      localStorage.setItem('fest_user', JSON.stringify(loggedInUser));
-      localStorage.setItem('userRole', loggedInUser.role);
+      sessionStorage.setItem('fest_user', JSON.stringify(loggedInUser));
+      sessionStorage.setItem('userRole', loggedInUser.role);
       return loggedInUser;
     } catch (err) {
       setError(err.message);
@@ -39,7 +40,9 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     setUser(null);
+    sessionStorage.removeItem('fest_user');
     localStorage.removeItem('fest_user');
+    sessionStorage.removeItem('userRole');
     localStorage.removeItem('userRole');
   };
 

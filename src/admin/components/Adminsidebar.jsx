@@ -1,29 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Trophy, LogOut } from 'lucide-react';
-import { ADMIN_NAV_ITEMS, ADMIN_HOME_PATH } from '../../admin/components/Adminnav';
+import { ADMIN_NAV_ITEMS, ADMIN_HOME_PATH } from './Adminnav';
 
-/*
- * Admin sidebar with a "line sidebar" effect: items slide to the right and their
- * marker line grows as the cursor gets close. No extra libraries.
- *
- * Props
- * - activeTab: id of the highlighted item (e.g. 'submissions')
- * - onSelect:  optional. Called with the tab id when an item is clicked.
- *              If omitted (e.g. on a detail page), it remembers the tab and goes to
- *              ADMIN_HOME_PATH instead.
- * - badges:    optional counts, e.g. { approvals: 0, submissions: 1 }
- * - showIndex: show 01, 02, 03 numbers before each item (default true)
- * - showIcons: also show each item's icon (default false)
- * - proximityRadius: how close the cursor must be, in px (default 100)
- * - maxShift: how far an item slides at most, in px (default 14)
- * - falloff: 'smooth' or 'linear' (default 'smooth')
- * - markerBase / markerLength: marker line width when far / when closest, in px (default 10 / 24)
- * - smoothing: how soft the movement is, in ms (default 100)
- *
- * The effect is skipped for people who have "reduce motion" turned on.
- */
-export default function AdminSidebar({
+export default function Adminsidebar({
   activeTab,
   onSelect,
   badges = {},
@@ -45,13 +25,11 @@ export default function AdminSidebar({
     if (onSelect) {
       onSelect(id);
     } else {
-      // On other pages: remember the tab (the dashboard reads this) and go to the dashboard
       sessionStorage.setItem('admin_tab', id);
       navigate(ADMIN_HOME_PATH);
     }
   };
 
-  // Cursor-proximity effect
   useEffect(() => {
     const aside = asideRef.current;
     if (!aside) return undefined;
@@ -123,8 +101,12 @@ export default function AdminSidebar({
   }, [proximityRadius, maxShift, falloff, markerBase, markerLength, smoothing]);
 
   const hasBadge = (item) => item.badgeKey && badges[item.badgeKey] !== undefined;
-
   const labelWithBadge = (item) => (hasBadge(item) ? `${item.label} (${badges[item.badgeKey]})` : item.label);
+
+  const clearSession = () => {
+    sessionStorage.removeItem('fest_user');
+    localStorage.removeItem('fest_user');
+  };
 
   return (
     <>
@@ -166,7 +148,6 @@ export default function AdminSidebar({
                   }`}
                   style={{ willChange: 'transform' }}
                 >
-                  {/* Marker line: grows as the cursor comes close */}
                   <span
                     ref={(el) => { markerRefs.current[i] = el; }}
                     aria-hidden="true"
@@ -186,7 +167,6 @@ export default function AdminSidebar({
                         active ? 'bg-[#F5A623] text-[#2A1A00]' : 'bg-white/15 text-white'
                       }`}
                     >
-                      <span className="sr-only">Count: </span>
                       {badges[item.badgeKey]}
                     </span>
                   )}
@@ -203,7 +183,7 @@ export default function AdminSidebar({
           </div>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-[#F5A623] hover:text-white"
           >
             <LogOut className="h-4 w-4" />
@@ -223,7 +203,7 @@ export default function AdminSidebar({
           </Link>
           <Link
             to="/login"
-            onClick={() => localStorage.removeItem('fest_user')}
+            onClick={clearSession}
             className="text-xs font-semibold text-[#F5A623]"
           >
             Sign Out

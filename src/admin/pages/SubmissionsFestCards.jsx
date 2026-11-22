@@ -5,7 +5,7 @@ import { groupByFest, fmtDateTime } from './rosterGroups';
 
 /*
  * The body of the "Department Submissions" tab: one card per fest.
- * Clicking a card opens /admin/submissions/:festId (FestRosterDetail).
+ * Clicking a card opens /admin/submissions/:festId (FestListDetail).
  */
 export default function SubmissionsFestCards({ registrations, onRefresh }) {
   const navigate = useNavigate();
@@ -19,7 +19,7 @@ export default function SubmissionsFestCards({ registrations, onRefresh }) {
           <div>
             <h2 className="fest-display text-lg font-bold text-[#0B3F46]">Department Submissions</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Choose a fest to see the rosters its departments forwarded. This page refreshes by itself.
+              Choose a fest to see the Lists its departments forwarded. This page refreshes by itself.
             </p>
           </div>
         </div>
@@ -33,7 +33,7 @@ export default function SubmissionsFestCards({ registrations, onRefresh }) {
       </div>
 
       {fests.length === 0 ? (
-        <p className="py-12 text-center text-xs text-slate-400">No department rosters have been submitted to Admin yet.</p>
+        <p className="py-12 text-center text-xs text-slate-400">No department Lists have been submitted to Admin yet.</p>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
           {fests.map((f) => (
@@ -57,7 +57,7 @@ export default function SubmissionsFestCards({ registrations, onRefresh }) {
                   </div>
                 </div>
                 <p className="mt-4 text-xs text-slate-500">Last forwarded {fmtDateTime(f.latest)}</p>
-                <p className="mt-3 text-sm font-semibold text-[#0B3F46] group-hover:underline">View rosters</p>
+                <p className="mt-3 text-sm font-semibold text-[#0B3F46] group-hover:underline">View Lists</p>
               </div>
             </button>
           ))}

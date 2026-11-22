@@ -297,12 +297,12 @@ export default function MediaDashboard() {
             </form>
           </section>
 
-          {/* Media Coverage Roster */}
+          {/* Media Coverage List */}
           <section className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
             <div className="p-5 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
               <div>
                 <h3 className="font-extrabold text-[#0B3F46] text-lg font-['Bricolage_Grotesque']">
-                  Media Coverage Roster
+                  Media Coverage List
                 </h3>
 
                 <p className="text-xs text-slate-400 mt-1">
